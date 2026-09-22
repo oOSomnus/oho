@@ -1,7 +1,7 @@
 import type { AgentToolContext, ToolCallContext } from "@oh-my-pi/pi-agent-core";
 import type { CustomToolContext } from "../extensibility/custom-tools/types";
 import type { ExtensionUIContext } from "../extensibility/extensions/types";
-
+import type { ToolApprovalReviewer } from "./approval-automode";
 declare module "@oh-my-pi/pi-agent-core" {
 	interface AgentToolContext extends CustomToolContext {
 		ui?: ExtensionUIContext;
@@ -21,6 +21,12 @@ declare module "@oh-my-pi/pi-agent-core" {
 		xdevTierResolved?(tier: "read" | "write" | "exec"): void;
 		/** Set only after an interactive prompt approves provider computer safety checks. */
 		providerSafetyApproved?: boolean;
+		/** Reviewer seam used only for mode-generated automode prompts. */
+		toolApprovalReviewer?: ToolApprovalReviewer;
+		/** Exact arguments approved by automode during a Cursor approval-only preflight. */
+		automodeApprovedArgs?: unknown;
+		/** Tool-call id paired with {@link automodeApprovedArgs}. */
+		automodeApprovedToolCallId?: string;
 	}
 }
 

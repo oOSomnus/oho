@@ -4,6 +4,7 @@
  * Approval policy is declared by each tool. This module only knows how to:
  * - normalize user `tools.approval.<tool>: allow | deny | prompt` overrides,
  * - compare a tool capability tier against the active approval mode,
+ * - keep explicit tool/user prompts and denies authoritative,
  * - format the generic approval prompt body.
  */
 import type { AgentTool, ToolApprovalDecision, ToolTier } from "@oh-my-pi/pi-agent-core";
@@ -11,7 +12,7 @@ import type { AgentTool, ToolApprovalDecision, ToolTier } from "@oh-my-pi/pi-age
 export type { ToolApproval, ToolApprovalDecision, ToolTier } from "@oh-my-pi/pi-agent-core";
 
 export type ApprovalPolicy = "allow" | "deny" | "prompt";
-export type ApprovalMode = "always-ask" | "write" | "yolo";
+export type ApprovalMode = "always-ask" | "write" | "automode" | "yolo";
 
 /** Settings-shaped reader the execute-time tool context may carry. */
 export type ApprovalSettingsReader = {
@@ -39,7 +40,7 @@ type ApprovalSubject = Pick<AgentTool, "name" | "approval" | "formatApprovalDeta
 	readonly legacyName?: string;
 };
 
-const APPROVAL_MODES: ReadonlySet<ApprovalMode> = new Set(["always-ask", "write", "yolo"]);
+const APPROVAL_MODES: ReadonlySet<ApprovalMode> = new Set(["always-ask", "write", "automode", "yolo"]);
 
 function isApprovalMode(value: unknown): value is ApprovalMode {
 	return typeof value === "string" && APPROVAL_MODES.has(value as ApprovalMode);
@@ -106,6 +107,7 @@ const TIER_RANK: Record<ToolTier, number> = {
 const APPROVAL_MODE_MAX_TIER: Record<ApprovalMode, ToolTier> = {
 	"always-ask": "read",
 	write: "write",
+	automode: "read",
 	yolo: "exec",
 };
 
@@ -182,6 +184,9 @@ function modeApprovesTier(mode: ApprovalMode, tier: ToolTier): boolean {
  *     policy still honors `tools.approval.write`).
  *  2. User per-tool override, if set and valid.
  *  3. Active mode tier comparison.
+ *
+ * `automode` has read-tier coverage; mode-generated write/exec prompts are
+ * the only prompts a reviewer may evaluate. Tool/user prompts remain human-gated.
  *
  * In yolo mode, override-based tool prompts are ignored; user `tools.approval`
  * settings remain authoritative.

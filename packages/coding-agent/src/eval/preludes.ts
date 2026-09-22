@@ -2,7 +2,7 @@ import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolAp
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../tools";
 import { denyError, formatApprovalPrompt, resolveApproval, resolveApprovalFromContext } from "../tools/approval";
-
+import { formatToolApprovalReviewRecommendation, type ToolApprovalReview } from "../tools/approval-automode";
 /** Host context supplied when an eval prelude calls back out of its language VM. */
 export interface EvalPreludeContext {
 	/** Live owning session; authorization is always resolved against its current preludes. */
@@ -88,16 +88,34 @@ async function approvePreludeInvocation(
 	if (resolved.policy === "deny") throw denyError(resolved, definition.name);
 	if (resolved.policy !== "prompt") return;
 
+	const operation = formatApprovalPrompt(subject, parameters, resolved.reason);
+	let automodeReview: ToolApprovalReview | undefined;
+	if (mode === "automode" && resolved.source === "mode" && context.context?.toolApprovalReviewer) {
+		automodeReview = await context.context.toolApprovalReviewer.review(
+			{
+				toolCallId: context.toolCallId,
+				toolName: definition.name,
+				tier: resolved.tier,
+				operation,
+			},
+			context.signal,
+		);
+		if (automodeReview.decision === "allow") return;
+		if (automodeReview.decision === "deny") {
+			throw new Error(`Eval prelude call denied by automode: ${definition.name}`);
+		}
+	}
+
 	const ui = context.context?.ui;
 	if (!ui || context.context?.hasUI === false) {
 		throw new Error(
 			`Eval prelude "${definition.name}" requires approval but no interactive UI is available.\n` +
-				`Set tools.approval.${definition.name}: allow or use an interactive UI to approve the call.`,
+				`Set tools.approval.${definition.name}: allow, configure the automode judge, or use an interactive UI.`,
 		);
 	}
-	const choice = await untilAborted(context.signal, () =>
-		ui.select(formatApprovalPrompt(subject, parameters, resolved.reason), ["Approve", "Deny"]),
-	);
+	const recommendation = automodeReview ? formatToolApprovalReviewRecommendation(automodeReview) : undefined;
+	const prompt = recommendation ? `${operation}\n\n${recommendation}` : operation;
+	const choice = await untilAborted(context.signal, () => ui.select(prompt, ["Approve", "Deny"]));
 	if (choice !== "Approve") throw new Error(`Eval prelude call denied by user: ${definition.name}`);
 }
 

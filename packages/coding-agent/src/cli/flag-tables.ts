@@ -227,12 +227,12 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 		result.skills = value.split(",").map(s => s.trim());
 	},
 	"--approval-mode": (result, value, deps) => {
-		if (value === "always-ask" || value === "write" || value === "yolo") {
+		if (value === "always-ask" || value === "write" || value === "automode" || value === "yolo") {
 			result.approvalMode = value;
 		} else {
 			deps.logger.warn("Invalid value passed to --approval-mode", {
 				value,
-				validValues: ["always-ask", "write", "yolo"],
+				validValues: ["always-ask", "write", "automode", "yolo"],
 			});
 		}
 	},

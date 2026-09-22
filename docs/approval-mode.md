@@ -19,9 +19,12 @@ Configure with `tools.approvalMode`:
 | ---------------- | ----------------------- | --------------- |
 | `always-ask`     | `read`                  | `write`, `exec` |
 | `write`          | `read`, `write`         | `exec`          |
+| `automode`       | `read`; reviews `write`, `exec` with the configured judge | uncertain or unavailable reviews fall back to UI |
 | `yolo` (default) | `read`, `write`, `exec` | none            |
 
 `--auto-approve` and `--yolo` force `tools.approvalMode: yolo` for the session.
+
+See [Automode tool approval](./approval-automode.md) for judge configuration, confidence thresholds, fallback behavior, and non-interactive usage.
 
 ## User overrides
 

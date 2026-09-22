@@ -2433,6 +2433,157 @@ describe("ExtensionRunner", () => {
 			]);
 			delete globalState.__approvalEvents;
 		});
+		it("uses a high-confidence automode allow without an interactive UI", async () => {
+			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
+			const reviewer = {
+				review: vi.fn(async () => ({ decision: "allow" as const, probability: 0.99, confidence: 0.99 })),
+			};
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ toolApprovalReviewer: reviewer },
+			);
+			const wrapper = new ExtensionToolWrapper(
+				{
+					...approvalTool,
+					execute,
+				},
+				runner,
+			);
+
+			await wrapper.execute("call-automode-allow", {} as never, undefined, undefined, {
+				sessionManager,
+				modelRegistry,
+				model: undefined,
+				isIdle: () => true,
+				hasQueuedMessages: () => false,
+				abort: () => {},
+				settings: Settings.isolated({ "tools.approvalMode": "automode" }),
+			});
+
+			expect(execute).toHaveBeenCalledTimes(1);
+			expect(reviewer.review).toHaveBeenCalledWith(
+				expect.objectContaining({ toolCallId: "call-automode-allow", toolName: "dangerous_tool", tier: "exec" }),
+				undefined,
+			);
+		});
+
+		it("denies an automode rejection before the wrapped tool runs", async () => {
+			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
+			const reviewer = {
+				review: vi.fn(async () => ({ decision: "deny" as const, probability: 0.99, confidence: 0.99 })),
+			};
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ toolApprovalReviewer: reviewer },
+			);
+			const wrapper = new ExtensionToolWrapper({ ...approvalTool, execute }, runner);
+
+			await expect(
+				wrapper.execute("call-automode-deny", {} as never, undefined, undefined, {
+					sessionManager,
+					modelRegistry,
+					model: undefined,
+					isIdle: () => true,
+					hasQueuedMessages: () => false,
+					abort: () => {},
+					settings: Settings.isolated({ "tools.approvalMode": "automode" }),
+				}),
+			).rejects.toThrow("Tool call denied by automode: dangerous_tool");
+			expect(execute).not.toHaveBeenCalled();
+		});
+
+		it("falls back to the interactive prompt for an ambiguous automode review", async () => {
+			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
+			const reviewer = {
+				review: vi.fn(async () => ({
+					decision: "ask_human" as const,
+					recommendation: "allow" as const,
+					probability: 0.71,
+					confidence: 0.62,
+				})),
+			};
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ toolApprovalReviewer: reviewer },
+			);
+			const prompts: string[] = [];
+			initializeRunner(runner, async title => {
+				prompts.push(title);
+				return "Approve";
+			});
+			const wrapper = new ExtensionToolWrapper({ ...approvalTool, execute }, runner);
+
+			await wrapper.execute("call-automode-fallback", {} as never, undefined, undefined, {
+				sessionManager,
+				modelRegistry,
+				model: undefined,
+				isIdle: () => true,
+				hasQueuedMessages: () => false,
+				abort: () => {},
+				settings: Settings.isolated({ "tools.approvalMode": "automode" }),
+			});
+
+			expect(execute).toHaveBeenCalledTimes(1);
+			expect(prompts[0]).toContain("Automode recommendation: allow; probability 0.71; confidence 0.62.");
+		});
+		it("keeps an explicit user prompt outside the automode reviewer", async () => {
+			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
+			const reviewer = { review: vi.fn(async () => ({ decision: "allow" as const })) };
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ toolApprovalReviewer: reviewer },
+			);
+			const wrapper = new ExtensionToolWrapper({ ...approvalTool, execute }, runner);
+
+			await expect(
+				wrapper.execute("call-automode-user-prompt", {} as never, undefined, undefined, {
+					sessionManager,
+					modelRegistry,
+					model: undefined,
+					isIdle: () => true,
+					hasQueuedMessages: () => false,
+					abort: () => {},
+					settings: Settings.isolated({
+						"tools.approvalMode": "automode",
+						"tools.approval": { dangerous_tool: "prompt" },
+					}),
+				}),
+			).rejects.toThrow(/requires approval but no interactive UI available/);
+			expect(reviewer.review).not.toHaveBeenCalled();
+			expect(execute).not.toHaveBeenCalled();
+		});
 
 		it("does not present approval before canonical or wire-aliased tool previews are ready", async () => {
 			const cases = [

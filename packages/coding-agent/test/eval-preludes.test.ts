@@ -110,6 +110,44 @@ describe("eval prelude host invocation", () => {
 		).rejects.toThrow(/requires approval but no interactive UI is available/);
 		expect(invoke).not.toHaveBeenCalled();
 	});
+	it("uses the automode reviewer before an exec prelude without UI", async () => {
+		const invoke = vi.fn(async (): Promise<AgentToolResult<unknown>> => ({
+			content: [{ type: "text", text: "ran" }],
+		}));
+		const reviewed: string[] = [];
+		const definition: EvalPreludeDefinition = {
+			name: "guarded",
+			documentation: "Guarded",
+			javascript: "globalThis.guarded = {};",
+			python: "guarded = object()",
+			exports: ["guarded"],
+			approval: "exec",
+			invoke,
+		};
+		const session = makeSession(() => [definition]);
+
+		const result = await invokeEvalPrelude(
+			"guarded",
+			{ command: "echo safe" },
+			{
+				session,
+				toolCallId: "automode-prelude",
+				context: {
+					settings: Settings.isolated({ "tools.approvalMode": "automode" }),
+					toolApprovalReviewer: {
+						review: async request => {
+							reviewed.push(`${request.toolCallId}:${request.tier}`);
+							return { decision: "allow" as const };
+						},
+					},
+				} as AgentToolContext,
+			},
+		);
+
+		expect(result.content).toEqual([{ type: "text", text: "ran" }]);
+		expect(reviewed).toEqual(["automode-prelude:exec"]);
+		expect(invoke).toHaveBeenCalledTimes(1);
+	});
 
 	it("never executes a handler denied by its approval policy", async () => {
 		const invoke = vi.fn(async (): Promise<AgentToolResult<unknown>> => ({

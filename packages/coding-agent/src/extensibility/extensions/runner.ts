@@ -25,6 +25,12 @@ import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
+import {
+	ToolApprovalAutomodeReviewer,
+	type ToolApprovalReview,
+	type ToolApprovalReviewRequest,
+	type ToolApprovalReviewer,
+} from "../../tools/approval-automode";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { ManagedTimers } from "./managed-timers";
@@ -433,6 +439,41 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+interface ToolApprovalRunnerOptions {
+	toolApprovalReviewer?: ToolApprovalReviewer;
+	obfuscateForApprovalReview?: (text: string) => string;
+}
+
+function textFromApprovalMessageContent(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const block of content) {
+		if (typeof block !== "object" || block === null) continue;
+		if (!("type" in block) || block.type !== "text") continue;
+		if ("text" in block && typeof block.text === "string") parts.push(block.text);
+	}
+	return parts.join("\n");
+}
+
+function latestUserText(sessionManager: SessionManager): string | undefined {
+	const branch = sessionManager.getBranch();
+	for (let index = branch.length - 1; index >= 0; index -= 1) {
+		const entry = branch[index];
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role !== "user" || !("content" in message)) continue;
+		if (
+			("synthetic" in message && message.synthetic === true) ||
+			("attribution" in message && message.attribution === "agent")
+		) {
+			continue;
+		}
+		const text = textFromApprovalMessageContent(message.content);
+		if (text.trim().length > 0) return text;
+	}
+	return undefined;
+}
 interface ToolRegistrationScope {
 	pending: Set<Promise<void>>;
 	signal?: AbortSignal;
@@ -446,6 +487,8 @@ export class ExtensionRunner {
 	#errorListeners: Set<ExtensionErrorListener> = new Set();
 	#getModel: () => Model | undefined = () => undefined;
 	#isIdleFn: () => boolean = () => true;
+	#toolApprovalReviewer?: ToolApprovalReviewer;
+	#obfuscateForApprovalReview?: (text: string) => string;
 	#waitForIdleFn: () => Promise<void> = async () => {};
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
@@ -613,10 +656,13 @@ export class ExtensionRunner {
 		private readonly settings?: Settings,
 		private readonly localProtocolOptions?: LocalProtocolOptions,
 		getAsyncJobSnapshot?: () => AsyncJobSnapshot | null,
+		approvalOptions?: ToolApprovalRunnerOptions,
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
 		this.#getAsyncJobSnapshotFn = getAsyncJobSnapshot ?? (() => null);
+		this.#toolApprovalReviewer = approvalOptions?.toolApprovalReviewer;
+		this.#obfuscateForApprovalReview = approvalOptions?.obfuscateForApprovalReview;
 	}
 
 	/**
@@ -656,6 +702,24 @@ export class ExtensionRunner {
 	 */
 	get sessionSettings(): Settings | undefined {
 		return this.settings;
+	}
+	/** Review one frozen operation through the session's automode reviewer seam. */
+	async reviewToolApproval(request: ToolApprovalReviewRequest, signal?: AbortSignal): Promise<ToolApprovalReview> {
+		if (!this.#toolApprovalReviewer) {
+			if (!this.settings) return { decision: "unavailable", reason: "session settings unavailable" };
+			this.#toolApprovalReviewer = new ToolApprovalAutomodeReviewer({
+				settings: this.settings,
+				registry: this.modelRegistry,
+				sessionManager: this.sessionManager,
+				sessionId: this.sessionId,
+				getSessionId: () => this.sessionId,
+				getModel: this.#getModel,
+				getCwd: () => this.cwd,
+				getLatestUserText: () => latestUserText(this.sessionManager),
+				obfuscateText: this.#obfuscateForApprovalReview,
+			});
+		}
+		return this.#toolApprovalReviewer.review(request, signal);
 	}
 
 	initialize(

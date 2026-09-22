@@ -4079,17 +4079,18 @@ export const SETTINGS_SCHEMA = {
 	// Default tool approval mode (interaction tab, but governs the tool wrapper).
 	//   "always-ask" — auto-approves read-tier tools only; prompts for write/exec.
 	//   "write"      — auto-approves read and write-tier tools; prompts for exec.
+	//   "automode"   — asks the configured judge to review write/exec prompts; ambiguous reviews fall back to UI.
 	//   "yolo"       — auto-approves every tier.
 	"tools.approvalMode": {
 		type: "enum",
-		values: ["always-ask", "write", "yolo"] as const,
+		values: ["always-ask", "write", "automode", "yolo"] as const,
 		default: "yolo",
 		ui: {
 			tab: "interaction",
 			group: "Approvals",
 			label: "Tool Approval",
 			description:
-				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
+				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Automode' asks the configured judge to review write and exec tools, then falls back to interactive confirmation when uncertain. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
 			options: [
 				{
 					value: "always-ask",
@@ -4101,6 +4102,12 @@ export const SETTINGS_SCHEMA = {
 					label: "Write",
 					description:
 						"Auto-approve read-only and write tools; require confirmation for exec tools such as bash, eval, browser, and task.",
+				},
+				{
+					value: "automode",
+					label: "Automode",
+					description:
+						"Ask the configured judge to review write and exec tools; ambiguous or unavailable reviews require interactive confirmation.",
 				},
 				{
 					value: "yolo",
