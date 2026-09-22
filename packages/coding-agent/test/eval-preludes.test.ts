@@ -149,6 +149,40 @@ describe("eval prelude host invocation", () => {
 		expect(invoke).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps a write prelude on ordinary approval when automode reviewer exists", async () => {
+		const invoke = vi.fn(async (): Promise<AgentToolResult<unknown>> => ({
+			content: [{ type: "text", text: "ran" }],
+		}));
+		const review = vi.fn(async () => ({ decision: "allow" as const }));
+		const definition: EvalPreludeDefinition = {
+			name: "guarded",
+			documentation: "Guarded",
+			javascript: "globalThis.guarded = {};",
+			python: "guarded = object()",
+			exports: ["guarded"],
+			approval: "write",
+			invoke,
+		};
+		const session = makeSession(() => [definition]);
+
+		await expect(
+			invokeEvalPrelude(
+				"guarded",
+				{},
+				{
+					session,
+					toolCallId: "automode-write-prelude",
+					context: {
+						settings: Settings.isolated({ "tools.approvalMode": "automode" }),
+						toolApprovalReviewer: { review },
+					} as unknown as AgentToolContext,
+				},
+			),
+		).rejects.toThrow(/requires approval but no interactive UI is available/);
+		expect(review).not.toHaveBeenCalled();
+		expect(invoke).not.toHaveBeenCalled();
+	});
+
 	it("never executes a handler denied by its approval policy", async () => {
 		const invoke = vi.fn(async (): Promise<AgentToolResult<unknown>> => ({
 			content: [{ type: "text", text: "must not run" }],

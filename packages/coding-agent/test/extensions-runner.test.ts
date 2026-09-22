@@ -2475,6 +2475,49 @@ describe("ExtensionRunner", () => {
 			);
 		});
 
+		it("uses ordinary UI approval for mode-generated write calls", async () => {
+			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
+			const reviewer = {
+				review: vi.fn(async () => ({ decision: "allow" as const })),
+			};
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ toolApprovalReviewer: reviewer },
+			);
+			const select = vi.fn(async () => "Approve");
+			initializeRunner(runner, select);
+			const wrapper = new ExtensionToolWrapper(
+				{
+					...approvalTool,
+					approval: "write" as const,
+					execute,
+				},
+				runner,
+			);
+
+			await wrapper.execute("call-automode-write", {} as never, undefined, undefined, {
+				sessionManager,
+				modelRegistry,
+				model: undefined,
+				isIdle: () => true,
+				hasQueuedMessages: () => false,
+				abort: () => {},
+				settings: Settings.isolated({ "tools.approvalMode": "automode" }),
+			});
+
+			expect(reviewer.review).not.toHaveBeenCalled();
+			expect(select).toHaveBeenCalledTimes(1);
+			expect(execute).toHaveBeenCalledTimes(1);
+		});
+
 		it("denies an automode rejection before the wrapped tool runs", async () => {
 			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
 			const reviewer = {
@@ -2530,11 +2573,8 @@ describe("ExtensionRunner", () => {
 				undefined,
 				{ toolApprovalReviewer: reviewer },
 			);
-			const prompts: string[] = [];
-			initializeRunner(runner, async title => {
-				prompts.push(title);
-				return "Approve";
-			});
+			const select = vi.fn(async () => "Approve");
+			initializeRunner(runner, select);
 			const wrapper = new ExtensionToolWrapper({ ...approvalTool, execute }, runner);
 
 			await wrapper.execute("call-automode-fallback", {} as never, undefined, undefined, {
@@ -2547,8 +2587,9 @@ describe("ExtensionRunner", () => {
 				settings: Settings.isolated({ "tools.approvalMode": "automode" }),
 			});
 
+			expect(reviewer.review).toHaveBeenCalledTimes(1);
+			expect(select).toHaveBeenCalledTimes(1);
 			expect(execute).toHaveBeenCalledTimes(1);
-			expect(prompts[0]).toContain("Automode recommendation: allow; probability 0.71; confidence 0.62.");
 		});
 		it("keeps an explicit user prompt outside the automode reviewer", async () => {
 			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));

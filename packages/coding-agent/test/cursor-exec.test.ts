@@ -1607,11 +1607,11 @@ describe("CursorExecHandlers native delete gating (issue #5680)", () => {
 		expect(result.isError).toBe(true);
 		expect(await Bun.file(target).exists()).toBe(true);
 	});
-	it("uses the automode reviewer for native deletes without a prompt channel", async () => {
+	it("refuses a native delete in automode through the ordinary write approval path", async () => {
 		const target = path.join(cwd, "automode-delete.txt");
-		await Bun.write(target, "remove me\n");
+		await Bun.write(target, "keep me\n");
 		const settings = Settings.isolated({ "tools.approvalMode": "automode" });
-		const reviewed: string[] = [];
+		let reviewCalls = 0;
 		const handlers = new CursorExecHandlers({
 			cwd,
 			tools: new Map(),
@@ -1620,44 +1620,20 @@ describe("CursorExecHandlers native delete gating (issue #5680)", () => {
 				({
 					settings,
 					toolApprovalReviewer: {
-						review: async request => {
-							reviewed.push(request.toolCallId);
+						review: async () => {
+							reviewCalls += 1;
 							return { decision: "allow" as const };
 						},
 					},
-				}) as AgentToolContext,
+				}) as unknown as AgentToolContext,
 		});
 
 		const result = await handlers.delete(
 			create(DeleteArgsSchema, { toolCallId: "call-automode-delete", path: "automode-delete.txt" }),
 		);
 
-		expect(result.isError).toBe(false);
-		expect(reviewed).toEqual(["call-automode-delete"]);
-		expect(await Bun.file(target).exists()).toBe(false);
-	});
-
-	it("keeps a native delete when automode denies it", async () => {
-		const target = path.join(cwd, "automode-deny.txt");
-		await Bun.write(target, "keep me\n");
-		const settings = Settings.isolated({ "tools.approvalMode": "automode" });
-		const handlers = new CursorExecHandlers({
-			cwd,
-			tools: new Map(),
-			allowDirectFileMutation: true,
-			getToolContext: () =>
-				({
-					settings,
-					toolApprovalReviewer: { review: async () => ({ decision: "deny" as const }) },
-				}) as unknown as AgentToolContext,
-		});
-
-		const result = await handlers.delete(
-			create(DeleteArgsSchema, { toolCallId: "call-automode-deny", path: "automode-deny.txt" }),
-		);
-
 		expect(result.isError).toBe(true);
-		expect(result.content.map(c => (c.type === "text" ? c.text : "")).join("")).toContain("denied by automode");
+		expect(reviewCalls).toBe(0);
 		expect(await Bun.file(target).exists()).toBe(true);
 	});
 
@@ -1697,6 +1673,7 @@ describe("CursorExecHandlers MCP approval preflight", () => {
 	function mcpHandlers(
 		settings: Settings,
 		toolApprovalReviewer?: AgentToolContext["toolApprovalReviewer"],
+		approval: AgentTool["approval"] = "exec",
 	): { handlers: CursorExecHandlers; executed: () => number; approvedContextIds: () => string[] } {
 		let executed = 0;
 		const approvedContextIds: string[] = [];
@@ -1705,6 +1682,7 @@ describe("CursorExecHandlers MCP approval preflight", () => {
 			label: "deploy",
 			description: "",
 			parameters: type({}),
+			approval,
 			execute: async (
 				_toolCallId: string,
 				_args: unknown,
@@ -1760,6 +1738,20 @@ describe("CursorExecHandlers MCP approval preflight", () => {
 		// their behalf pre-authorizes something they never saw.
 		expect(await handlers.mcpApprovalPreflight(call)).toBe(false);
 	});
+
+	it("refuses a write-tier preflight without invoking the automode reviewer", async () => {
+		let reviewCalls = 0;
+		const reviewer = {
+			review: async () => {
+				reviewCalls += 1;
+				return { decision: "allow" as const };
+			},
+		};
+		const { handlers } = mcpHandlers(Settings.isolated({ "tools.approvalMode": "automode" }), reviewer, "write");
+
+		expect(await handlers.mcpApprovalPreflight(call)).toBe(false);
+		expect(reviewCalls).toBe(0);
+	});
 	it("uses automode preflight approval once for the exact MCP call", async () => {
 		let reviewCalls = 0;
 		const reviewer = {
@@ -1780,6 +1772,76 @@ describe("CursorExecHandlers MCP approval preflight", () => {
 		expect(reviewCalls).toBe(1);
 		expect(executed()).toBe(2);
 		expect(approvedContextIds()).toEqual(["c1"]);
+	});
+
+	it("does not reuse a nested MCP grant after its arguments change", async () => {
+		let executed = 0;
+		const approvedContextIds: string[] = [];
+		let reviewCalls = 0;
+		const runnerReviewCalls: string[] = [];
+		const reviewer = {
+			review: async () => {
+				reviewCalls += 1;
+				return { decision: "allow" as const };
+			},
+		};
+		const tool: AgentTool = {
+			name: "mcp__ops__nested",
+			label: "nested",
+			description: "",
+			parameters: type({ payload: type({ path: type("string") }) }),
+			approval: "exec",
+			execute: async (
+				_toolCallId: string,
+				_args: unknown,
+				_signal: AbortSignal | undefined,
+				_onUpdate: unknown,
+				context?: AgentToolContext,
+			) => {
+				executed += 1;
+				if (context?.automodeApprovedToolCallId) approvedContextIds.push(context.automodeApprovedToolCallId);
+				return { content: [{ type: "text", text: "ran" }] };
+			},
+		} as unknown as AgentTool;
+		const runner = {
+			...passthroughRunner(),
+			hasHandlers: () => false,
+			reviewToolApproval: async (
+				request: Parameters<ExtensionRunner["reviewToolApproval"]>[0],
+				_signal?: AbortSignal,
+			) => {
+				runnerReviewCalls.push(request.toolCallId);
+				return reviewer.review();
+			},
+		} as unknown as ExtensionRunner;
+		const wrapped = new ExtensionToolWrapper(tool, runner);
+		const settings = Settings.isolated({ "tools.approvalMode": "automode" });
+		const handlers = new CursorExecHandlers({
+			cwd,
+			tools: new Map([[tool.name, tool]]),
+			getExecutableTool: name => (name === tool.name ? (wrapped as unknown as AgentTool) : undefined),
+			getToolContext: () => ({ settings, toolApprovalReviewer: reviewer }) as unknown as AgentToolContext,
+		});
+		const nestedCall = {
+			name: tool.name,
+			toolName: tool.name,
+			toolCallId: "nested-call",
+			providerIdentifier: "ops",
+			args: { payload: { path: "before" } },
+			rawArgs: {},
+		};
+
+		expect(await handlers.mcpApprovalPreflight(nestedCall)).toBe(true);
+		nestedCall.args.payload.path = "after";
+		const result = await handlers.mcp(nestedCall);
+		expect(result.content).toEqual([{ type: "text", text: "ran" }]);
+
+		expect({ reviewCalls, runnerReviewCalls, approvedContextIds, executed }).toEqual({
+			reviewCalls: 2,
+			runnerReviewCalls: ["nested-call"],
+			approvedContextIds: [],
+			executed: 1,
+		});
 	});
 
 	it("refuses a tool the session does not have", async () => {

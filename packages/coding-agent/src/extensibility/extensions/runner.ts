@@ -16,6 +16,7 @@ import {
 	markPerCallContextMessage,
 	setContextHistoryIndex,
 } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import type { KeyId } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -443,19 +444,6 @@ interface ToolApprovalRunnerOptions {
 	toolApprovalReviewer?: ToolApprovalReviewer;
 	obfuscateForApprovalReview?: (text: string) => string;
 }
-
-function textFromApprovalMessageContent(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const block of content) {
-		if (typeof block !== "object" || block === null) continue;
-		if (!("type" in block) || block.type !== "text") continue;
-		if ("text" in block && typeof block.text === "string") parts.push(block.text);
-	}
-	return parts.join("\n");
-}
-
 function latestUserText(sessionManager: SessionManager): string | undefined {
 	const branch = sessionManager.getBranch();
 	for (let index = branch.length - 1; index >= 0; index -= 1) {
@@ -469,11 +457,12 @@ function latestUserText(sessionManager: SessionManager): string | undefined {
 		) {
 			continue;
 		}
-		const text = textFromApprovalMessageContent(message.content);
+		const text = textContent(message.content);
 		if (text.trim().length > 0) return text;
 	}
 	return undefined;
 }
+
 interface ToolRegistrationScope {
 	pending: Set<Promise<void>>;
 	signal?: AbortSignal;

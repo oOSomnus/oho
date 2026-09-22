@@ -315,6 +315,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			const automodeEligible =
 				pendingSafetyChecks.length === 0 &&
 				approvalMode === "automode" &&
+				resolved.tier === "exec" &&
 				resolved.policy === "prompt" &&
 				resolved.source === "mode";
 			let automodeReview: ToolApprovalReview | undefined;

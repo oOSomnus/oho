@@ -19,7 +19,7 @@ Configure with `tools.approvalMode`:
 | ---------------- | ----------------------- | --------------- |
 | `always-ask`     | `read`                  | `write`, `exec` |
 | `write`          | `read`, `write`         | `exec`          |
-| `automode`       | `read`; reviews `write`, `exec` with the configured judge | uncertain or unavailable reviews fall back to UI |
+| `automode`       | `read`                  | `write` uses ordinary approval; `exec` goes to the configured judge, with uncertain or unavailable reviews falling back to UI |
 | `yolo` (default) | `read`, `write`, `exec` | none            |
 
 `--auto-approve` and `--yolo` force `tools.approvalMode: yolo` for the session.

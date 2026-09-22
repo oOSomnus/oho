@@ -4079,7 +4079,7 @@ export const SETTINGS_SCHEMA = {
 	// Default tool approval mode (interaction tab, but governs the tool wrapper).
 	//   "always-ask" — auto-approves read-tier tools only; prompts for write/exec.
 	//   "write"      — auto-approves read and write-tier tools; prompts for exec.
-	//   "automode"   — asks the configured judge to review write/exec prompts; ambiguous reviews fall back to UI.
+	//   "automode"   — auto-approves read, uses ordinary approval for write, and asks the configured judge to review exec prompts.
 	//   "yolo"       — auto-approves every tier.
 	"tools.approvalMode": {
 		type: "enum",
@@ -4090,7 +4090,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Approvals",
 			label: "Tool Approval",
 			description:
-				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Automode' asks the configured judge to review write and exec tools, then falls back to interactive confirmation when uncertain. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
+				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Automode' uses ordinary approval for write tools and asks the configured judge to review exec tools, then falls back to interactive confirmation when uncertain. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
 			options: [
 				{
 					value: "always-ask",
@@ -4105,9 +4105,9 @@ export const SETTINGS_SCHEMA = {
 				},
 				{
 					value: "automode",
-					label: "Automode",
+					label: "Automode (exec review)",
 					description:
-						"Ask the configured judge to review write and exec tools; ambiguous or unavailable reviews require interactive confirmation.",
+						"Use ordinary approval for write tools and ask the configured judge to review exec tools; ambiguous or unavailable reviews require interactive confirmation.",
 				},
 				{
 					value: "yolo",

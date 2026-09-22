@@ -90,7 +90,12 @@ async function approvePreludeInvocation(
 
 	const operation = formatApprovalPrompt(subject, parameters, resolved.reason);
 	let automodeReview: ToolApprovalReview | undefined;
-	if (mode === "automode" && resolved.source === "mode" && context.context?.toolApprovalReviewer) {
+	if (
+		mode === "automode" &&
+		resolved.tier === "exec" &&
+		resolved.source === "mode" &&
+		context.context?.toolApprovalReviewer
+	) {
 		automodeReview = await context.context.toolApprovalReviewer.review(
 			{
 				toolCallId: context.toolCallId,

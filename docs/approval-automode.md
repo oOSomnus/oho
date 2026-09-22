@@ -1,6 +1,6 @@
 # Automode tool approval
 
-`automode` uses the configured `judge` model role to review write and exec tool calls. Read-only tools are approved by the normal tier resolver. A model decision never replaces the static approval policy: explicit denies, provider safety checks, and other higher-priority approval rules remain authoritative.
+`automode` uses the configured `judge` model role only for mode-generated exec tool calls. Read-only tools are approved by the normal tier resolver, and write tools use ordinary approval. A model decision never replaces the static approval policy: explicit denies, provider safety checks, and other higher-priority approval rules remain authoritative.
 
 ## Quick start
 
@@ -83,7 +83,7 @@ The static resolver first classifies the tool call as `read`, `write`, or `exec`
 | Tier | Automode behavior |
 | --- | --- |
 | `read` | Approved by the normal resolver; no judge request is sent. |
-| `write` | Sent to the judge when the active mode is the source of the prompt. |
+| `write` | Uses the ordinary approval path; no judge request is sent. |
 | `exec` | Sent to the judge when the active mode is the source of the prompt. |
 
 The review state is bounded and contains:
@@ -103,7 +103,7 @@ Automode only reviews a prompt produced by `tools.approvalMode: automode`. It do
 2. A user `tools.approval.<tool>: deny` always denies.
 3. Explicit tool or user `allow`/`prompt` policies retain their existing behavior.
 4. Provider-originated `pendingSafetyChecks` always require interactive approval.
-5. Only the remaining mode-generated write/exec prompt reaches the automode reviewer.
+5. Only the remaining mode-generated exec prompt reaches the automode reviewer; mode-generated write prompts use ordinary approval.
 
 For sensitive tools, keep a human gate explicitly:
 
@@ -121,12 +121,12 @@ An explicit `prompt` is not converted into model approval. It continues through 
 
 The reviewer returns one of `allow`, `deny`, or `ask_human`.
 
-A model `allow` is accepted only when both the selected-choice probability and confidence meet the tier threshold:
+A model `allow` is accepted only when both the selected-choice probability and confidence meet the exec threshold:
 
-| Decision | `write` | `exec` |
-| --- | ---: | ---: |
-| `allow` | `0.90` | `0.97` |
-| `deny` | `0.95` | `0.95` |
+| Decision | `exec` |
+| --- | ---: |
+| `allow` | `0.97` |
+| `deny` | `0.95` |
 
 Anything below the threshold, an invalid structured answer, `ask_human`, an unavailable judge, or a review timeout falls back to the existing approval UI. The review deadline is 10 seconds and concurrent reviews are limited to two per session.
 
@@ -134,9 +134,8 @@ If no interactive UI is available, an unresolved review fails closed. It never b
 
 ## Cursor, MCP, ACP, and eval paths
 
-Automode uses the same static policy and reviewer for the normal tool wrapper, eval prelude calls, Cursor native mutations, and Cursor MCP approval-only frames.
-
-For Cursor MCP calls, an approved preflight creates a bounded one-shot grant tied to the exact call id, tool name, and arguments. A mismatch or reuse discards the grant and re-enters the approval gate.
+Only mode-generated exec prompts use the automode reviewer across the normal tool wrapper and eval prelude paths. Cursor native write mutations stay on ordinary approval and fail closed when no UI is available. Cursor MCP write-tier preflight returns `false`; exec-tier preflight can create the exact-call one-shot grant described below.
+For Cursor MCP exec calls, an approved preflight creates a bounded one-shot grant tied to the exact call id, tool name, and arguments. A mismatch or reuse discards the grant and re-enters the exec approval gate.
 
 ACP uses the same global/project settings and `--config` overlays as normal launches. Provider safety checks and explicit deny policies remain higher priority than automode.
 

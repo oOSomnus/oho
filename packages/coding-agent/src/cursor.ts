@@ -27,7 +27,7 @@ import {
 	piReadPath,
 	piTimeout,
 } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { cursorMcpPrefersReplaceEdit, normalizeCursorReplaceArgs } from "./cursor-bridge-tools";
 import type { MCPResourceReadResult } from "./mcp/types";
 import { formatApprovalPrompt, resolveApproval, resolveApprovalFromContext } from "./tools/approval";
@@ -316,6 +316,7 @@ async function refuseByWritePolicy(
 	if (approval.policy === "allow") return null;
 	if (
 		approval.policy === "prompt" &&
+		approval.tier === "exec" &&
 		approvalMode === "automode" &&
 		approval.source === "mode" &&
 		context?.toolApprovalReviewer
@@ -461,11 +462,15 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 	#automodeApprovalGrants = new Map<string, CursorAutomodeApprovalGrant>();
 
 	#rememberAutomodeApproval(toolCallId: string, grant: CursorAutomodeApprovalGrant): void {
+		const args = structuredCloneJSON(grant.args);
 		if (this.#automodeApprovalGrants.size >= MAX_CURSOR_AUTOMODE_APPROVAL_GRANTS) {
 			const oldest = this.#automodeApprovalGrants.keys().next().value;
 			if (typeof oldest === "string") this.#automodeApprovalGrants.delete(oldest);
 		}
-		this.#automodeApprovalGrants.set(toolCallId, grant);
+		this.#automodeApprovalGrants.set(toolCallId, {
+			toolName: grant.toolName,
+			args,
+		});
 	}
 
 	#consumeAutomodeApproval(
@@ -478,13 +483,12 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		this.#automodeApprovalGrants.delete(toolCallId);
 		if (grant.toolName !== toolName || !Bun.deepEquals(grant.args, args)) return undefined;
 		const context = this.options.getToolContext?.();
-		return context
-			? {
-					...context,
-					automodeApprovedToolCallId: toolCallId,
-					automodeApprovedArgs: args,
-				}
-			: undefined;
+		if (!context) return undefined;
+		return {
+			...context,
+			automodeApprovedToolCallId: toolCallId,
+			automodeApprovedArgs: structuredCloneJSON(grant.args),
+		};
 	}
 
 	/**
@@ -1037,6 +1041,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		const preferReplace = cursorMcpPrefersReplaceEdit(toolName, args);
 		const executionToolName = preferReplace ? "edit" : toolName;
 		const executionArgs = preferReplace ? normalizeCursorReplaceArgs(args) : args;
+		const executionArgsWithoutUndefined = omitUndefinedArgs(executionArgs);
 		const tool = preferReplace
 			? this.options.getEditReplaceTool?.()
 			: (this.options.getExecutableTool?.(toolName) ?? this.options.tools.get(toolName));
@@ -1047,12 +1052,19 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		if (approval.policy === "allow") return true;
 		if (
 			approval.policy !== "prompt" ||
+			approval.tier !== "exec" ||
 			approvalMode !== "automode" ||
 			approval.source !== "mode" ||
 			!context?.toolApprovalReviewer ||
 			typeof call.toolCallId !== "string" ||
 			call.toolCallId.length === 0
 		) {
+			return false;
+		}
+		let approvedArgs: Record<string, unknown>;
+		try {
+			approvedArgs = structuredCloneJSON(executionArgsWithoutUndefined);
+		} catch {
 			return false;
 		}
 		const toolCallId = decodeToolCallId(call.toolCallId);
@@ -1065,7 +1077,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		if (review.decision !== "allow") return false;
 		this.#rememberAutomodeApproval(toolCallId, {
 			toolName: executionToolName,
-			args: omitUndefinedArgs(executionArgs),
+			args: approvedArgs,
 		});
 		return true;
 	}

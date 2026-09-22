@@ -185,8 +185,8 @@ function modeApprovesTier(mode: ApprovalMode, tier: ToolTier): boolean {
  *  2. User per-tool override, if set and valid.
  *  3. Active mode tier comparison.
  *
- * `automode` has read-tier coverage; mode-generated write/exec prompts are
- * the only prompts a reviewer may evaluate. Tool/user prompts remain human-gated.
+ * `automode` has read-tier coverage; only mode-generated exec prompts are reviewed. Mode-generated write prompts
+ * remain human-gated, and tool/user prompts remain human-gated.
  *
  * In yolo mode, override-based tool prompts are ignored; user `tools.approval`
  * settings remain authoritative.
