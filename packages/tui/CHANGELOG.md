@@ -2,10 +2,18 @@
 
 ## [Unreleased]
 
+## [18.2.10] - 2026-09-22
+
+### Changed
+
+- Added support for multiple concurrent TUI paint listeners to enable simultaneous session recording and streaming
+- Coalesced status event updates for progress-based operations to reduce TUI render overhead
+
 ## [18.2.9] - 2026-09-22
 
 ### Added
 
+- Added Claude and Codex saved-reset counts, availability, and expiry to usage views, with provider-specific confirmation and uniquely identified account options.
 - Added terminal detection and capability support for otty and rio, including Kitty graphics and true-color support where available, plus otty hyperlinks and notifications.
 - Added the public `stripTerminalSequences` export for extensions that need to remove terminal control sequences.
 
