@@ -24,7 +24,7 @@ describe("InteractiveMode Laya judge prewarm", () => {
 		initTheme();
 		tempDir = TempDir.createSync("@pi-interactive-mode-laya-prewarm-");
 		authStorage = createInMemoryAuthStorage();
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 	});
 
