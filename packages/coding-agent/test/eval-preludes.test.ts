@@ -149,7 +149,7 @@ describe("eval prelude host invocation", () => {
 		expect(invoke).toHaveBeenCalledTimes(1);
 	});
 
-	it("keeps a write prelude on ordinary approval when automode reviewer exists", async () => {
+	it("runs a write prelude directly in automode without UI or judge review", async () => {
 		const invoke = vi.fn(async (): Promise<AgentToolResult<unknown>> => ({
 			content: [{ type: "text", text: "ran" }],
 		}));
@@ -165,22 +165,22 @@ describe("eval prelude host invocation", () => {
 		};
 		const session = makeSession(() => [definition]);
 
-		await expect(
-			invokeEvalPrelude(
-				"guarded",
-				{},
-				{
-					session,
-					toolCallId: "automode-write-prelude",
-					context: {
-						settings: Settings.isolated({ "tools.approvalMode": "automode" }),
-						toolApprovalReviewer: { review },
-					} as unknown as AgentToolContext,
-				},
-			),
-		).rejects.toThrow(/requires approval but no interactive UI is available/);
+		const result = await invokeEvalPrelude(
+			"guarded",
+			{},
+			{
+				session,
+				toolCallId: "automode-write-prelude",
+				context: {
+					settings: Settings.isolated({ "tools.approvalMode": "automode" }),
+					toolApprovalReviewer: { review },
+				} as unknown as AgentToolContext,
+			},
+		);
+
+		expect(result.content).toEqual([{ type: "text", text: "ran" }]);
 		expect(review).not.toHaveBeenCalled();
-		expect(invoke).not.toHaveBeenCalled();
+		expect(invoke).toHaveBeenCalledTimes(1);
 	});
 
 	it("never executes a handler denied by its approval policy", async () => {

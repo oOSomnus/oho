@@ -29,6 +29,7 @@ import type { SessionManager } from "../../session/session-manager";
 import {
 	ToolApprovalAutomodeReviewer,
 	type ToolApprovalReview,
+	type ToolApprovalReviewChoice,
 	type ToolApprovalReviewRequest,
 	type ToolApprovalReviewer,
 } from "../../tools/approval-automode";
@@ -444,6 +445,7 @@ const noOpUIContext: ExtensionUIContext = {
 
 interface ToolApprovalRunnerOptions {
 	toolApprovalReviewer?: ToolApprovalReviewer;
+	onToolApprovalResolved?: (request: ToolApprovalReviewRequest, decision: ToolApprovalReviewChoice) => void;
 	obfuscateForApprovalReview?: (text: string) => string;
 }
 const APPROVAL_CONTEXT_MESSAGE_LIMIT = 8;
@@ -491,6 +493,7 @@ export class ExtensionRunner {
 	#isIdleFn: () => boolean = () => true;
 	#toolApprovalReviewer?: ToolApprovalReviewer;
 	#obfuscateForApprovalReview?: (text: string) => string;
+	#onToolApprovalResolved?: ToolApprovalRunnerOptions["onToolApprovalResolved"];
 	#waitForIdleFn: () => Promise<void> = async () => {};
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
@@ -664,6 +667,7 @@ export class ExtensionRunner {
 		this.#getMemoryFn = getMemory;
 		this.#getAsyncJobSnapshotFn = getAsyncJobSnapshot ?? (() => null);
 		this.#toolApprovalReviewer = approvalOptions?.toolApprovalReviewer;
+		this.#onToolApprovalResolved = approvalOptions?.onToolApprovalResolved;
 		this.#obfuscateForApprovalReview = approvalOptions?.obfuscateForApprovalReview;
 	}
 
@@ -721,7 +725,18 @@ export class ExtensionRunner {
 				obfuscateText: this.#obfuscateForApprovalReview,
 			});
 		}
-		return this.#toolApprovalReviewer.review(request, signal);
+		const review = await this.#toolApprovalReviewer.review(request, signal);
+		if (review.decision === "allow" || review.decision === "deny") {
+			try {
+				this.#onToolApprovalResolved?.(request, review.decision);
+			} catch (error) {
+				logger.warn("Automode tool approval decision notification failed", {
+					toolName: request.toolName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		return review;
 	}
 
 	initialize(

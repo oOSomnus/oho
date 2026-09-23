@@ -1607,9 +1607,9 @@ describe("CursorExecHandlers native delete gating (issue #5680)", () => {
 		expect(result.isError).toBe(true);
 		expect(await Bun.file(target).exists()).toBe(true);
 	});
-	it("refuses a native delete in automode through the ordinary write approval path", async () => {
+	it("allows a native delete in automode without judge review", async () => {
 		const target = path.join(cwd, "automode-delete.txt");
-		await Bun.write(target, "keep me\n");
+		await Bun.write(target, "remove me\n");
 		const settings = Settings.isolated({ "tools.approvalMode": "automode" });
 		let reviewCalls = 0;
 		const handlers = new CursorExecHandlers({
@@ -1632,9 +1632,9 @@ describe("CursorExecHandlers native delete gating (issue #5680)", () => {
 			create(DeleteArgsSchema, { toolCallId: "call-automode-delete", path: "automode-delete.txt" }),
 		);
 
-		expect(result.isError).toBe(true);
+		expect(result.isError).toBe(false);
 		expect(reviewCalls).toBe(0);
-		expect(await Bun.file(target).exists()).toBe(true);
+		expect(await Bun.file(target).exists()).toBe(false);
 	});
 
 	it("refuses a native delete when execute-time context is missing", async () => {
@@ -1739,7 +1739,7 @@ describe("CursorExecHandlers MCP approval preflight", () => {
 		expect(await handlers.mcpApprovalPreflight(call)).toBe(false);
 	});
 
-	it("refuses a write-tier preflight without invoking the automode reviewer", async () => {
+	it("approves a write-tier preflight in automode without judge review", async () => {
 		let reviewCalls = 0;
 		const reviewer = {
 			review: async () => {
@@ -1749,7 +1749,7 @@ describe("CursorExecHandlers MCP approval preflight", () => {
 		};
 		const { handlers } = mcpHandlers(Settings.isolated({ "tools.approvalMode": "automode" }), reviewer, "write");
 
-		expect(await handlers.mcpApprovalPreflight(call)).toBe(false);
+		expect(await handlers.mcpApprovalPreflight(call)).toBe(true);
 		expect(reviewCalls).toBe(0);
 	});
 	it("uses automode preflight approval once for the exact MCP call", async () => {

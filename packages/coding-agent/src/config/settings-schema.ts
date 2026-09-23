@@ -4129,7 +4129,7 @@ export const SETTINGS_SCHEMA = {
 	// Default tool approval mode (interaction tab, but governs the tool wrapper).
 	//   "always-ask" — auto-approves read-tier tools only; prompts for write/exec.
 	//   "write"      — auto-approves read and write-tier tools; prompts for exec.
-	//   "automode"   — auto-approves read, uses ordinary approval for write, and asks the configured judge to review exec prompts.
+	//   "automode"   — auto-approves read/write tiers; the configured judge reviews mode-generated exec prompts.
 	//   "yolo"       — auto-approves every tier.
 	"tools.approvalMode": {
 		type: "enum",
@@ -4140,7 +4140,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Approvals",
 			label: "Tool Approval",
 			description:
-				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Automode' uses ordinary approval for write tools and asks the configured judge to review exec tools, then falls back to interactive confirmation when the review is unavailable. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
+				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Automode' auto-approves read and write tools and asks the configured judge to review mode-generated exec prompts, then falls back to interactive confirmation when the review is uncertain or unavailable. Explicit prompts and provider safety checks remain gated. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
 			options: [
 				{
 					value: "always-ask",
@@ -4157,7 +4157,7 @@ export const SETTINGS_SCHEMA = {
 					value: "automode",
 					label: "Automode (exec review)",
 					description:
-						"Use ordinary approval for write tools and ask the configured judge to review exec tools; unavailable reviews require interactive confirmation.",
+						"Auto-approve read and write tools; ask the configured judge to review mode-generated exec prompts, falling back to confirmation for uncertain or unavailable reviews.",
 				},
 				{
 					value: "yolo",

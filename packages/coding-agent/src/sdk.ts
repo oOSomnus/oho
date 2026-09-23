@@ -2925,6 +2925,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			() => (hasSession ? session.getAsyncJobSnapshot() : null),
 			{
 				obfuscateForApprovalReview: obfuscator?.hasSecrets() ? text => obfuscator.obfuscate(text) : undefined,
+				onToolApprovalResolved: (request, decision) => {
+					if (hasSession) session.recordToolApprovalDecision(request, decision);
+				},
 			},
 		);
 

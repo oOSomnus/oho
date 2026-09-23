@@ -30,7 +30,12 @@ import { createAgentSession, type ExtensionContext, type ExtensionFactory } from
 import { obfuscateProviderContext, SecretObfuscator } from "@oh-my-pi/pi-coding-agent/secrets";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { convertToLlm, wrapSteeringForModel } from "@oh-my-pi/pi-coding-agent/session/messages";
+import type { CustomMessage } from "@oh-my-pi/pi-tui/chat/messages";
+import {
+	convertToLlm,
+	TOOL_APPROVAL_NOTICE_MESSAGE_TYPE,
+	wrapSteeringForModel,
+} from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
@@ -928,6 +933,96 @@ describe("AgentSession message pipeline", () => {
 
 		resolve();
 		await Bun.sleep(0);
+	});
+
+	it("records visible judge decisions in the transcript but not model context", async () => {
+		using tempDir = TempDir.createSync("@pi-tool-approval-notice-");
+		const sessionDir = tempDir.join("sessions");
+		const sessionManager = SessionManager.create(tempDir.path(), sessionDir);
+		sessionManager.appendMessage({ role: "user", content: "Review the requested changes.", timestamp: Date.now() });
+		await sessionManager.ensureOnDisk();
+		const session = new AgentSession({
+			agent: createAgent(),
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry: {} as never,
+		});
+		let reopenedSessionManager: SessionManager | undefined;
+		const events: Array<{ type: "message_start" | "message_end"; display: boolean; content: string }> = [];
+		const unsubscribe = session.subscribe(event => {
+			if (event.type !== "message_start" && event.type !== "message_end") return;
+			if (
+				event.message.role !== "custom" ||
+				event.message.customType !== TOOL_APPROVAL_NOTICE_MESSAGE_TYPE ||
+				typeof event.message.content !== "string"
+			) {
+				return;
+			}
+			events.push({ type: event.type, display: event.message.display, content: event.message.content });
+		});
+		try {
+			session.recordToolApprovalDecision(
+				{
+					toolCallId: "call-allow",
+					toolName: "bash",
+					tier: "exec",
+					operation: "Allow tool: bash\n$ printf safe",
+				},
+				"allow",
+			);
+			session.recordToolApprovalDecision(
+				{
+					toolCallId: "call-deny",
+					toolName: "edit",
+					tier: "exec",
+					operation: "Allow tool: edit\nModify an unrelated file",
+				},
+				"deny",
+			);
+			await sessionManager.flush();
+			const sessionFile = sessionManager.getSessionFile();
+			if (!sessionFile) throw new Error("Expected persisted session file");
+			reopenedSessionManager = await SessionManager.open(sessionFile, sessionDir, undefined, {
+				initialCwd: tempDir.path(),
+				suppressBreadcrumb: true,
+			});
+
+			const expectedNotices = [
+				"Automode approved tool call: bash\nAllow tool: bash $ printf safe",
+				"Automode denied tool call: edit\nAllow tool: edit Modify an unrelated file",
+			];
+			expect(events).toEqual([
+				{ type: "message_start", display: true, content: expectedNotices[0] },
+				{ type: "message_end", display: true, content: expectedNotices[0] },
+				{ type: "message_start", display: true, content: expectedNotices[1] },
+				{ type: "message_end", display: true, content: expectedNotices[1] },
+			]);
+			const transcript = reopenedSessionManager.buildSessionContext({ transcript: true }).messages;
+			const notices = transcript.filter(
+				(message): message is CustomMessage =>
+					message.role === "custom" && message.customType === TOOL_APPROVAL_NOTICE_MESSAGE_TYPE,
+			);
+			expect(notices.map(message => [message.content, message.attribution, message.display])).toEqual([
+				[expectedNotices[0], "agent", true],
+				[expectedNotices[1], "agent", true],
+			]);
+			expect(
+				reopenedSessionManager
+					.buildSessionContext()
+					.messages.some(
+						message => message.role === "custom" && message.customType === TOOL_APPROVAL_NOTICE_MESSAGE_TYPE,
+					),
+			).toBe(false);
+			expect(
+				session.agent.state.messages.some(
+					message => message.role === "custom" && message.customType === TOOL_APPROVAL_NOTICE_MESSAGE_TYPE,
+				),
+			).toBe(false);
+		} finally {
+			unsubscribe();
+			await reopenedSessionManager?.close();
+			await session.dispose();
+		}
 	});
 
 	it("keeps first-turn memory in the stable prompt on the next turn", async () => {

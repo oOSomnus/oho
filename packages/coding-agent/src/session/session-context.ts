@@ -16,6 +16,7 @@ import {
 	isEmptyErrorTurn,
 	PREWALK_PLAN_MESSAGE_TYPE,
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
+	TOOL_APPROVAL_NOTICE_MESSAGE_TYPE,
 } from "./messages";
 import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes, renderContextNotes } from "./context-notes";
 import {
@@ -391,7 +392,9 @@ export function buildSessionContext(
 		} else if (entry.type === "custom_message") {
 			if (
 				!options?.transcript &&
-				(entry.customType === PREWALK_PLAN_MESSAGE_TYPE || entry.customType === VIBE_MODE_CONTEXT_MESSAGE_TYPE)
+				(entry.customType === PREWALK_PLAN_MESSAGE_TYPE ||
+					entry.customType === VIBE_MODE_CONTEXT_MESSAGE_TYPE ||
+					entry.customType === TOOL_APPROVAL_NOTICE_MESSAGE_TYPE)
 			) {
 				return;
 			}

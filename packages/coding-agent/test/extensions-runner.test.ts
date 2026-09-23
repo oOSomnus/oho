@@ -2496,7 +2496,7 @@ describe("ExtensionRunner", () => {
 			);
 		});
 
-		it("uses ordinary UI approval for mode-generated write calls", async () => {
+		it("allows a mode-generated write call without UI or judge review", async () => {
 			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
 			const reviewer = {
 				review: vi.fn(async () => ({ decision: "allow" as const })),
@@ -2513,8 +2513,6 @@ describe("ExtensionRunner", () => {
 				undefined,
 				{ toolApprovalReviewer: reviewer },
 			);
-			const select = vi.fn(async () => "Approve");
-			initializeRunner(runner, select);
 			const wrapper = new ExtensionToolWrapper(
 				{
 					...approvalTool,
@@ -2534,9 +2532,8 @@ describe("ExtensionRunner", () => {
 				settings: Settings.isolated({ "tools.approvalMode": "automode" }),
 			});
 
-			expect(reviewer.review).not.toHaveBeenCalled();
-			expect(select).toHaveBeenCalledTimes(1);
 			expect(execute).toHaveBeenCalledTimes(1);
+			expect(reviewer.review).not.toHaveBeenCalled();
 		});
 
 		it("directly rejects an automode deny before the wrapped tool runs", async () => {
@@ -2570,6 +2567,43 @@ describe("ExtensionRunner", () => {
 				}),
 			).rejects.toThrow("Tool call denied by automode: dangerous_tool");
 			expect(execute).not.toHaveBeenCalled();
+		});
+
+		it("publishes allow and deny judge decisions but not unavailable reviews", async () => {
+			const onToolApprovalResolved = vi.fn();
+			const reviewer = {
+				review: vi.fn(async (request: Parameters<ExtensionRunner["reviewToolApproval"]>[0]) => {
+					if (request.toolCallId === "call-allow") return { decision: "allow" as const, reason: "in scope" };
+					if (request.toolCallId === "call-deny") return { decision: "deny" as const, reason: "unsafe" };
+					return { decision: "unavailable" as const, reason: "judge offline" };
+				}),
+			};
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ toolApprovalReviewer: reviewer, onToolApprovalResolved },
+			);
+			const request: Parameters<ExtensionRunner["reviewToolApproval"]>[0] = {
+				toolCallId: "call-allow",
+				toolName: "dangerous_tool",
+				tier: "exec",
+				operation: "Run the requested command",
+			};
+
+			await runner.reviewToolApproval(request);
+			await runner.reviewToolApproval({ ...request, toolCallId: "call-deny" });
+			await runner.reviewToolApproval({ ...request, toolCallId: "call-unavailable" });
+
+			expect(onToolApprovalResolved).toHaveBeenNthCalledWith(1, request, "allow");
+			expect(onToolApprovalResolved).toHaveBeenNthCalledWith(2, { ...request, toolCallId: "call-deny" }, "deny");
+			expect(onToolApprovalResolved).toHaveBeenCalledTimes(2);
 		});
 
 		it("falls back to the interactive prompt when an automode review is unavailable", async () => {

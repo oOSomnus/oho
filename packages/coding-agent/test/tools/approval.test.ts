@@ -65,7 +65,7 @@ describe("resolveApproval tier matrix", () => {
 		["write", "write", "allow"],
 		["write", "exec", "prompt"],
 		["automode", "read", "allow"],
-		["automode", "write", "prompt"],
+		["automode", "write", "allow"],
 		["automode", "exec", "prompt"],
 		["yolo", "read", "allow"],
 		["yolo", "write", "allow"],
