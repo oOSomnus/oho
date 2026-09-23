@@ -281,6 +281,7 @@ import {
 	setSymbolPreset,
 	startMacOSAppearanceReprobeFallback,
 	theme,
+	warmHighlighter,
 } from "@oh-my-pi/pi-tui/theme";
 import { getSlashCommandTypeIcon } from "@oh-my-pi/pi-tui/theme/tui-adapters";
 import type {
@@ -1452,11 +1453,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		}));
 
 		// Convert custom commands (TypeScript) to SlashCommand format
-		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => ({
-			name: loaded.command.name,
-			description: `${loaded.command.description} (${loaded.source})`,
-			icon: getSlashCommandTypeIcon(loaded.path.startsWith("mcp:") ? "mcp" : "prompt"),
-		}));
+		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => {
+			const complete = loaded.command.getArgumentCompletions?.bind(loaded.command);
+			return {
+				name: loaded.command.name,
+				description: `${loaded.command.description} (${loaded.source})`,
+				icon: getSlashCommandTypeIcon(loaded.path.startsWith("mcp:") ? "mcp" : "prompt"),
+				getArgumentCompletions: complete && (prefix => complete(prefix, this.sessionManager.getCwd())),
+			};
+		});
 
 		const skillCommandList = this.#rebuildSkillCommandsFromSession();
 
@@ -1801,7 +1806,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		// not be titled. Deferred via setImmediate so it runs AFTER the render
 		// callback requestRender(true) queued above (immediates are FIFO) — the
 		// spawn syscall never lands in the same loop turn ahead of the first paint.
+		// The native syntax set (syntect defaults plus the vendored TypeScript/TSX/
+		// Julia grammars, parsed from YAML) costs ~1s to build on first use, and each
+		// language's regexes compile on its first highlight (~250ms for TS/TSX).
+		// Warm both on the native worker pool now so the first highlighted code
+		// block, bash command preview, or file diff does not stall the render thread.
 		setImmediate(() => {
+			void warmHighlighter();
 			if (!$env.PI_NO_TITLE && !this.sessionManager.getSessionName()) {
 				this.#inputController.prewarmTinyTitleModel();
 			}
@@ -6576,8 +6587,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleUsageCommand(reports);
 	}
 
-	async handleChangelogCommand(showFull = false): Promise<void> {
-		await this.#commandController.handleChangelogCommand(showFull);
+	async handleChangelogCommand(args = ""): Promise<void> {
+		await this.#commandController.handleChangelogCommand(args);
 	}
 
 	handleHotkeysCommand(): void {
