@@ -247,13 +247,16 @@ describe("ModelRegistry", () => {
 
 			expect(registry.getAll().every(model => modelKind(model) === "chat")).toBe(true);
 			expect(registry.getAvailable().every(model => modelKind(model) === "chat")).toBe(true);
-			expect(registry.getAll().some(model => ["local", "web", "typesafe"].includes(model.provider))).toBe(false);
-			expect(registry.getAvailable().some(model => ["local", "web", "typesafe"].includes(model.provider))).toBe(
+			expect(registry.getAll().some(model => ["local", "web", "typesafe", "laya"].includes(model.provider))).toBe(
 				false,
 			);
+			expect(
+				registry.getAvailable().some(model => ["local", "web", "typesafe", "laya"].includes(model.provider)),
+			).toBe(false);
 			expect(registry.find("local", "falcon-h1-90m")).toMatchObject({ kind: "tiny" });
 			expect(registry.find("web", "duckduckgo")).toMatchObject({ kind: "search" });
 			expect(registry.find("typesafe", "jev-latest")).toMatchObject({ kind: "judge" });
+			expect(registry.find("laya", "typed-decisions")).toMatchObject({ kind: "judge", api: "laya-local" });
 		});
 
 		test("all and kind pools expose keyless runners and authenticated TypeSafe models", () => {
@@ -272,6 +275,7 @@ describe("ModelRegistry", () => {
 					expect.objectContaining({ provider: "local", id: "kokoro", kind: "tts" }),
 					expect.objectContaining({ provider: "local", id: "whisper-base", kind: "stt" }),
 					expect.objectContaining({ provider: "web", id: "duckduckgo", kind: "search" }),
+					expect.objectContaining({ provider: "laya", id: "typed-decisions", kind: "judge", api: "laya-local" }),
 					expect.objectContaining({ provider: "typesafe", id: "jev-latest", kind: "judge" }),
 				]),
 			);
@@ -288,6 +292,9 @@ describe("ModelRegistry", () => {
 				expect.objectContaining({ provider: "web", id: "duckduckgo" }),
 			);
 			expect(registry.getAvailable("judge").some(model => model.provider === "typesafe")).toBe(false);
+			expect(registry.getAvailable("judge")).toContainEqual(
+				expect.objectContaining({ provider: "laya", id: "typed-decisions", api: "laya-local" }),
+			);
 			expect(registry.getAvailable("all").some(model => model.provider === "typesafe")).toBe(false);
 
 			authStorage.setRuntimeApiKey("typesafe", "typesafe-test-key");
@@ -299,6 +306,7 @@ describe("ModelRegistry", () => {
 				expect.arrayContaining([
 					expect.objectContaining({ provider: "local", id: "falcon-h1-90m" }),
 					expect.objectContaining({ provider: "web", id: "duckduckgo" }),
+					expect.objectContaining({ provider: "laya", id: "typed-decisions" }),
 					expect.objectContaining({ provider: "typesafe", id: "jev-latest" }),
 				]),
 			);
@@ -363,12 +371,12 @@ describe("ModelRegistry", () => {
 		test("disabled runner providers remain excluded from available kind and all pools", () => {
 			authStorage.setRuntimeApiKey("typesafe", "typesafe-test-key");
 			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
-				settings: Settings.isolated({ disabledProviders: ["local", "web", "typesafe"] }),
+				settings: Settings.isolated({ disabledProviders: ["local", "web", "typesafe", "laya"] }),
 			});
 
 			for (const kind of ["tiny", "tts", "stt", "search", "judge", "all"] as const) {
 				expect(
-					registry.getAvailable(kind).some(model => ["local", "web", "typesafe"].includes(model.provider)),
+					registry.getAvailable(kind).some(model => ["local", "web", "typesafe", "laya"].includes(model.provider)),
 				).toBe(false);
 			}
 		});

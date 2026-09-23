@@ -41,9 +41,10 @@ omp acp --approval-mode automode
 
 ## Configure the judge
 
-The reviewer uses `modelRoles.judge`, not the active primary chat model. The role accepts three backend types:
+The reviewer uses `modelRoles.judge`, not the active primary chat model. The role accepts four backend types:
 
 - **Judgment APIs**, such as `typesafe/jev-latest`, which return structured choices and probabilities directly.
+- **Laya**, selected with `laya/typed-decisions`, which runs the typed-decision checkpoint locally on CPU without an API key.
 - **Local models**, selected with `local/<model-id>` and adapted through the existing text-judgment backend.
 - **Chat models**, selected with a normal `provider/model-id` selector and adapted to the same typed judgment interface.
 
@@ -66,7 +67,34 @@ retry:
     judge: []
 ```
 
-The local model must be available in the local model catalog. Inspect candidates with:
+### Laya CPU judge
+
+Use Laya when the judge should run locally without a provider credential:
+
+```yaml
+modelRoles:
+  judge: laya/typed-decisions
+
+retry:
+  fallbackChains:
+    judge:
+      - typesafe/jev-latest
+```
+
+The first Laya use bootstraps a private Python runtime with `uv` (or
+`python3 -m venv`), installs `laya==0.3.6` and CPU-only PyTorch, then downloads
+`convaiinnovations/laya/typed-decisions` into the local Hugging Face cache. The
+runtime supports Python 3.10–3.13. No API key or `/login` step is required, but
+the first bootstrap/download needs network access. Subsequent sessions reuse the
+runtime, model cache, and detached worker.
+
+The worker is CPU-only and exits after 15 minutes without a request. Set
+`OMP_LAYA_WORKER_IDLE_MS` to change that lifetime for a test or managed
+environment. If installation, model loading, or a judgment fails, the normal
+judge fallback chain continues; an unavailable local judge never becomes an
+implicit allow.
+
+The selected judge model must be available in the catalog. Inspect candidates with:
 
 ```bash
 omp models --kind judge

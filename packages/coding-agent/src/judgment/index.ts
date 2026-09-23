@@ -33,6 +33,8 @@ import type { SessionManager } from "../session/session-manager";
 import { getTinyLocalModelSpec } from "../tiny/models";
 import localPromptTemplate from "../prompts/system/judgment-local.md" with { type: "text" };
 import { tinyModelClient } from "../tiny/title-client";
+import { LayaJudge } from "./laya";
+import { layaJudgeClient } from "./laya-client";
 
 /** Usage of one judgment attempt, recorded on the session ledger by callers. */
 export interface JudgmentUsage {
@@ -100,16 +102,14 @@ const kRejections = Symbol("judgment.rejections");
 interface RegistryWithRejections extends ModelRegistry {
 	[kRejections]?: Map<string, number>;
 }
-
-/** Which backend a judge-role candidate routes to: native System One decisions, on-device keywords, or a chat model. */
-export type JudgeKind = "native" | "local" | "online";
+/** Which backend a judge-role candidate routes to: native System One decisions, Laya typed decisions, on-device keywords, or a chat model. */
+export type JudgeKind = "native" | "laya" | "local" | "online";
 
 /** Classify a role candidate by model API, never by provider identity. */
-export function kindOf(candidate: RoleChainCandidate): JudgeKind;
-export function kindOf(model: Model): JudgeKind;
 export function kindOf(value: RoleChainCandidate | Model): JudgeKind {
 	const model = "model" in value ? value.model : value;
 	if (isJudgmentApi(model.api)) return "native";
+	if (model.api === "laya-local") return "laya";
 	if (model.api === "local-inference") return "local";
 	return "online";
 }
@@ -196,6 +196,10 @@ export class ChainJudge implements Judge {
 
 	async #createJudge(candidate: RoleChainCandidate, signal: AbortSignal | undefined): Promise<Judge | undefined> {
 		const model = candidate.model;
+		if (model.api === "laya-local") {
+			const judge = new LayaJudge(model, layaJudgeClient);
+			return usageReportingLayaJudge(judge, this.#deps.onUsage);
+		}
 		if (model.api === "local-inference") return new TextJudge(new LocalTextBackend(model.id));
 		if (!(await this.#deps.registry.getApiKey(model, this.#deps.sessionId, { signal }))) return undefined;
 		const apiKey = this.#deps.registry.resolver(model, this.#deps.sessionId);
@@ -259,6 +263,28 @@ class LocalTextBackend implements TextBackend {
 		if (!text) throw new Error(`judgment: local model ${this.model} returned no output`);
 		return { text };
 	}
+}
+
+/** Report a local Laya judgment as a zero-cost judge-role attempt. */
+function usageReportingLayaJudge(judge: LayaJudge, onUsage: JudgeDeps["onUsage"]): Judge {
+	return {
+		label: judge.label,
+		async judge<Q extends Questions>(
+			request: JudgmentRequest<Q>,
+			options?: JudgeOptions,
+		): Promise<JudgmentResult<Q>> {
+			const result = await judge.judge(request, options);
+			onUsage?.({
+				role: "judge",
+				api: result.api,
+				provider: result.provider,
+				model: result.model,
+				usage: result.usage,
+				stopReason: "stop",
+			});
+			return result;
+		},
+	};
 }
 
 /**

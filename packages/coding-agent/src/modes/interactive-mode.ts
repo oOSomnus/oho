@@ -101,6 +101,7 @@ import {
 import { humanizePlanTitle, type PlanApprovalDetails, resolvePlanTitle } from "../plan-mode/approved-plan";
 import { autosaveApprovedPlan, planSaveFileName } from "../plan-mode/plan-autosave";
 import { resolvePlanModelTransition } from "../plan-mode/model-transition";
+import { layaJudgeClient } from "../judgment/laya-client";
 import guidedGoalInterviewPrompt from "../prompts/goals/guided-goal-interview.md" with { type: "text" };
 import planFilenamePrompt from "../prompts/system/plan-filename.md" with { type: "text" };
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
@@ -1716,9 +1717,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncConfigWarningHeader();
 		this.#eventBusUnsubscribers.push(
 			onModelRolesChanged(() => {
+				this.#prewarmLayaJudge();
 				void this.#reapplyPlanModeModelOnRoleChange();
 			}),
 		);
+		this.#prewarmLayaJudge();
 		this.#eventBusUnsubscribers.push(
 			this.session.subscribeCommandMetadataChanged(() => {
 				const retainedCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
@@ -3484,6 +3487,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		this.#scheduleGoalContinuation();
+	}
+
+	/** Start the local typed-decision worker without blocking the first judge call. */
+	#prewarmLayaJudge(): void {
+		if (this.session.resolveRoleModelWithThinking("judge").model?.api === "laya-local") {
+			layaJudgeClient.prewarm();
+		}
 	}
 
 	async #applyPlanModeModel(): Promise<void> {

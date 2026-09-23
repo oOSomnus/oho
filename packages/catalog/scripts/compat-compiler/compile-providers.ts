@@ -75,6 +75,7 @@ const DISCOVERY_PROPS = ["label", "oauth-provider", "allow-unauthenticated"] as 
 export const PROVIDER_CATALOG_NODES: ReadonlySet<string> = new Set([
 	"default-model",
 	"env",
+	"keyless",
 	"allow-unauthenticated",
 	"dynamic-models-authoritative",
 	"skip-cross-provider-reference-fills",
@@ -348,6 +349,10 @@ function parseProvider(node: KdlNodeView): ParsedProvider | undefined {
 			case "env":
 				if (provider.envVars !== undefined) malformed(child);
 				provider.envVars = stringList(child);
+				break;
+			case "keyless":
+				if (provider.keyless !== undefined) malformed(child);
+				provider.keyless = singleBoolean(child);
 				break;
 			case "allow-unauthenticated":
 				if (provider.allowUnauthenticated !== undefined) malformed(child);

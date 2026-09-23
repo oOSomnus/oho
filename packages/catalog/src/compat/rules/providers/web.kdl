@@ -2,6 +2,7 @@
 
 provider "web" {
 	default-model "public"
+	keyless #true
 	allow-unauthenticated #true
 
 	seed api="web-search" base-url="web://search" bundle="always" {
