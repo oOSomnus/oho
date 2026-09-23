@@ -33,6 +33,8 @@ export interface LayaJudgeClientOptions {
 	runtimeDir?: string;
 }
 
+export type LayaJudgeLoadState = "idle" | "loading" | "ready" | "failed";
+
 type LayaPending = {
 	kind: "load" | "judge";
 	resolve: (response: LayaWorkerResponse) => void;
@@ -73,10 +75,18 @@ export class LayaJudgeClient {
 	#nextRequestId = 0;
 	#loaded = false;
 	#loadPromise: Promise<void> | undefined;
+	#loadState: LayaJudgeLoadState = "idle";
+	#loadStateListeners = new Set<(state: LayaJudgeLoadState) => void>();
 	#connect: () => Promise<RefCountedWorkerHandle<LayaWorkerRequest, LayaWorkerResponse>>;
 
 	constructor(options: LayaJudgeClientOptions = {}) {
 		this.#connect = options.connect ?? (() => this.#connectDefault(options.runtimeDir ?? getLayaWorkerRuntimeDir()));
+	}
+
+	subscribeLoadState(listener: (state: LayaJudgeLoadState) => void): () => void {
+		this.#loadStateListeners.add(listener);
+		this.#notifyLoadState(listener, this.#loadState);
+		return () => this.#loadStateListeners.delete(listener);
 	}
 
 	prewarm(): void {
@@ -114,6 +124,7 @@ export class LayaJudgeClient {
 		this.#workers = null;
 		this.#loaded = false;
 		this.#loadPromise = undefined;
+		this.#setLoadState("idle");
 		this.#workerRefed = false;
 		if (worker) await worker.terminate();
 	}
@@ -218,14 +229,21 @@ export class LayaJudgeClient {
 	#load(signal?: AbortSignal): Promise<void> {
 		if (this.#loaded) return Promise.resolve();
 		if (this.#loadPromise) return raceWithAbort(this.#loadPromise, signal);
+		this.#setLoadState("loading");
 		const loadPromise = this.#request({ type: "load", id: this.#requestId() }, "load", signal).then(response => {
 			if (response.type !== "loaded") throw new Error(`laya: expected loaded response, got ${response.type}`);
 			if (response.device !== "cpu") throw new Error(`laya: worker reported non-CPU device ${response.device}`);
 			this.#loaded = true;
+			this.#setLoadState("ready");
 		});
-		const tracked = loadPromise.finally(() => {
-			if (this.#loadPromise === tracked) this.#loadPromise = undefined;
-		});
+		const tracked = loadPromise
+			.catch(error => {
+				if (this.#loadPromise === tracked) this.#setLoadState("failed");
+				throw error;
+			})
+			.finally(() => {
+				if (this.#loadPromise === tracked) this.#loadPromise = undefined;
+			});
 		this.#loadPromise = tracked;
 		return tracked;
 	}
@@ -272,6 +290,7 @@ export class LayaJudgeClient {
 	}
 
 	#handleWorkerError(error: Error): void {
+		const loadInProgress = this.#loadPromise !== undefined;
 		const worker = this.#workers;
 		this.#unsubscribe?.();
 		this.#unsubscribe = null;
@@ -281,6 +300,7 @@ export class LayaJudgeClient {
 		this.#workers = null;
 		this.#loaded = false;
 		this.#loadPromise = undefined;
+		this.#setLoadState(loadInProgress ? "failed" : "idle");
 		this.#workerRefed = false;
 		if (worker) void worker.terminate();
 		if (error.message.startsWith(JSONL_WORKER_CLOSED)) {
@@ -297,6 +317,20 @@ export class LayaJudgeClient {
 		this.#workerRefed = shouldRef;
 		if (shouldRef) this.#workers.ref();
 		else this.#workers.unref();
+	}
+
+	#notifyLoadState(listener: (state: LayaJudgeLoadState) => void, state: LayaJudgeLoadState): void {
+		try {
+			listener(state);
+		} catch (error) {
+			logger.debug("laya: load-state listener failed", { error: workerError(error).message });
+		}
+	}
+
+	#setLoadState(state: LayaJudgeLoadState): void {
+		if (this.#loadState === state) return;
+		this.#loadState = state;
+		for (const listener of this.#loadStateListeners) this.#notifyLoadState(listener, state);
 	}
 }
 

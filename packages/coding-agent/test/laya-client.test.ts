@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JudgmentRequest } from "@oh-my-pi/pi-ai";
-import { LayaJudgeClient } from "@oh-my-pi/pi-coding-agent/judgment/laya-client";
+import { LayaJudgeClient, type LayaJudgeLoadState } from "@oh-my-pi/pi-coding-agent/judgment/laya-client";
 import type { LayaWorkerRequest, LayaWorkerResponse } from "@oh-my-pi/pi-coding-agent/judgment/laya-protocol";
 import type { RefCountedWorkerHandle } from "@oh-my-pi/pi-coding-agent/subprocess/worker-client";
 
@@ -110,16 +110,23 @@ function clientWithConnect(connect: () => Promise<FakeHandle>): LayaJudgeClient 
 }
 
 describe("LayaJudgeClient", () => {
-	test("loads once, validates the CPU handshake, and reuses the worker", async () => {
+	test("coalesces the load lifecycle and reports the current state to subscribers", async () => {
 		const handle = new FakeHandle();
 		const client = clientWith(handle);
+		const states: LayaJudgeLoadState[] = [];
+		const unsubscribe = client.subscribeLoadState(state => states.push(state));
 
-		await client.judge(request);
-		await client.judge(request);
+		await Promise.all([client.judge(request), client.judge(request)]);
 
 		expect(handle.sent.map(message => message.type)).toEqual(["load", "judge", "judge"]);
-		expect(handle.refCount).toBe(0);
+		expect(states).toEqual(["idle", "loading", "ready"]);
+		const lateStates: LayaJudgeLoadState[] = [];
+		const unsubscribeLate = client.subscribeLoadState(state => lateStates.push(state));
+		expect(lateStates).toEqual(["ready"]);
+		unsubscribeLate();
 		await client.terminate();
+		expect(states).toEqual(["idle", "loading", "ready", "idle"]);
+		unsubscribe();
 	});
 
 	test("rejects a worker that reports a non-CPU device", async () => {
@@ -127,6 +134,23 @@ describe("LayaJudgeClient", () => {
 		handle.loadedDevice("cuda");
 
 		await expect(clientWith(handle).judge(request)).rejects.toThrow("non-CPU device cuda");
+	});
+
+	test("reports load failure and reaches ready after a retry", async () => {
+		const handle = new FakeHandle();
+		handle.loadReply(id => ({ type: "error", id, error: "model load failed" }));
+		const client = clientWith(handle);
+		const states: LayaJudgeLoadState[] = [];
+		const unsubscribe = client.subscribeLoadState(state => states.push(state));
+
+		await expect(client.judge(request)).rejects.toThrow("model load failed");
+		expect(states).toEqual(["idle", "loading", "failed"]);
+
+		handle.loadReply(undefined);
+		await expect(client.judge(request)).resolves.toMatchObject({ answers: { risk: { choice: "safe" } } });
+		expect(states).toEqual(["idle", "loading", "failed", "loading", "ready"]);
+		await client.terminate();
+		unsubscribe();
 	});
 
 	test("aborts a pending judgment and ignores its late response", async () => {

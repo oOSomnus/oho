@@ -444,23 +444,34 @@ interface ToolApprovalRunnerOptions {
 	toolApprovalReviewer?: ToolApprovalReviewer;
 	obfuscateForApprovalReview?: (text: string) => string;
 }
-function latestUserText(sessionManager: SessionManager): string | undefined {
+const APPROVAL_CONTEXT_MESSAGE_LIMIT = 8;
+function approvalConversationContext(sessionManager: SessionManager): {
+	latestUserText: string | undefined;
+	recentMessages: string | undefined;
+} {
 	const branch = sessionManager.getBranch();
+	const messages: string[] = [];
+	let latestUserText: string | undefined;
 	for (let index = branch.length - 1; index >= 0; index -= 1) {
 		const entry = branch[index];
 		if (entry.type !== "message") continue;
 		const message = entry.message;
-		if (message.role !== "user" || !("content" in message)) continue;
+		if (message.role !== "user" && message.role !== "assistant") continue;
 		if (
-			("synthetic" in message && message.synthetic === true) ||
-			("attribution" in message && message.attribution === "agent")
+			message.role === "user" &&
+			(("synthetic" in message && message.synthetic === true) ||
+				("attribution" in message && message.attribution === "agent"))
 		) {
 			continue;
 		}
-		const text = textContent(message.content);
-		if (text.trim().length > 0) return text;
+		const text = textContent(message.content).trim();
+		if (text.length === 0) continue;
+		if (message.role === "user" && latestUserText === undefined) latestUserText = text;
+		if (messages.length < APPROVAL_CONTEXT_MESSAGE_LIMIT) messages.push(`${message.role}: ${text}`);
+		if (messages.length >= APPROVAL_CONTEXT_MESSAGE_LIMIT && latestUserText !== undefined) break;
 	}
-	return undefined;
+	messages.reverse();
+	return { latestUserText, recentMessages: messages.length > 0 ? messages.join("\n") : undefined };
 }
 
 interface ToolRegistrationScope {
@@ -704,7 +715,7 @@ export class ExtensionRunner {
 				getSessionId: () => this.sessionId,
 				getModel: this.#getModel,
 				getCwd: () => this.cwd,
-				getLatestUserText: () => latestUserText(this.sessionManager),
+				getConversationContext: () => approvalConversationContext(this.sessionManager),
 				obfuscateText: this.#obfuscateForApprovalReview,
 			});
 		}

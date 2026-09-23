@@ -32,6 +32,14 @@ const LAYA = getBundledModel("laya", "typed-decisions");
 
 if (!LAYA) throw new Error("Expected bundled Laya judge model");
 const ONLINE_BACKUP = { ...ONLINE, id: "claude-sonnet-judge-backup", name: "Judge Backup" } as Model<Api>;
+const GPT_PRIMARY = {
+	...ONLINE,
+	id: "gpt-test",
+	name: "GPT Test",
+	provider: "openai",
+	api: "openai-responses",
+	baseUrl: "https://api.openai.com/v1",
+} as Model<Api>;
 
 const BUCKET_QUESTION: ChoiceQuestion<"trivial" | "moderate" | "hard"> = {
 	type: "choice",
@@ -200,6 +208,49 @@ describe("ChainJudge", () => {
 		expect(onUsage).toHaveBeenCalledWith(
 			expect.objectContaining({ role: "judge", api: "laya-local", provider: "laya", model: "typed-decisions" }),
 		);
+	});
+	it("reaches a configured Laya fallback only after the GPT primary fails on demand", async () => {
+		const settings = Settings.isolated({
+			modelRoles: { judge: `${GPT_PRIMARY.provider}/${GPT_PRIMARY.id}` },
+			"retry.fallbackChains": { judge: [`${LAYA.provider}/${LAYA.id}`] },
+		});
+		const registry = makeRegistry([GPT_PRIMARY, LAYA], { openai: "openai-key" });
+		const attempts: string[] = [];
+		const completeSimple = vi.spyOn(ai, "completeSimple").mockImplementation(async model => {
+			attempts.push(`${model.provider}/${model.id}`);
+			throw new Error("GPT judgment failed");
+		});
+		const prewarm = vi.spyOn(layaJudgeClient, "prewarm").mockImplementation(() => {});
+		const laya = vi.spyOn(layaJudgeClient, "judge").mockImplementation(async () => {
+			attempts.push("laya");
+			return {
+				model: "typed-decisions",
+				answers: {
+					level: {
+						type: "choice",
+						choice: "high",
+						probabilities: { low: 0.1, high: 0.9 },
+						confidence: 0.9,
+					},
+				},
+				usage: { input_tokens: 4, output_tokens: 1 },
+			};
+		});
+		const judge = new ChainJudge({ settings, registry });
+
+		expect(completeSimple).not.toHaveBeenCalled();
+		expect(laya).not.toHaveBeenCalled();
+		expect(prewarm).not.toHaveBeenCalled();
+		const result = await judge.judge({
+			state: "prefer a safe change",
+			questions: { level: TIER_QUESTION },
+		});
+
+		expect(result.api).toBe("laya-local");
+		expect(result.answers.level.choice).toBe("high");
+		expect(attempts).toEqual([`${GPT_PRIMARY.provider}/${GPT_PRIMARY.id}`, "laya"]);
+		expect(laya).toHaveBeenCalledTimes(1);
+		expect(prewarm).not.toHaveBeenCalled();
 	});
 
 	it("journals judgment usage on the active branch and stops once the session changes", async () => {

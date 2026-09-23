@@ -14,6 +14,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { convertToLlm, wrapSteeringForModel } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { layaJudgeClient } from "@oh-my-pi/pi-coding-agent/judgment/laya-client";
 import { ExtensionRuntime, loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import {
 	EXTENSION_HANDLER_TIMEOUT_MS,
@@ -2340,6 +2341,66 @@ describe("ExtensionRunner", () => {
 			approval: "exec" as const,
 			execute: async () => ({ content: [{ type: "text" as const, text: "ok" }] }),
 		};
+		it("passes the latest user request and recent conversation to the default Automode reviewer", async () => {
+			sessionManager.appendMessage({
+				role: "user",
+				content: "For this task, do not modify generated catalog files.",
+				timestamp: 1,
+			});
+			sessionManager.appendMessage({
+				role: "user",
+				content: "Update the source file we discussed.",
+				timestamp: 2,
+			});
+			const settings = Settings.isolated({
+				modelRoles: { judge: "laya/typed-decisions" },
+				"retry.fallbackChains": { judge: [] },
+			});
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+				undefined,
+				settings,
+			);
+			let observedState: Record<string, string> | undefined;
+			const laya = vi.spyOn(layaJudgeClient, "judge").mockImplementation(async request => {
+				observedState = request.state as Record<string, string>;
+				return {
+					model: "typed-decisions",
+					answers: {
+						decision: {
+							type: "choice",
+							choice: "allow",
+							probabilities: { allow: 1, deny: 0 },
+							confidence: 1,
+						},
+					},
+					usage: { input_tokens: 1, output_tokens: 1 },
+				};
+			});
+
+			try {
+				expect(
+					await runner.reviewToolApproval({
+						toolCallId: "context-review",
+						toolName: "write",
+						tier: "write",
+						operation: "Write the requested source file",
+					}),
+				).toMatchObject({ decision: "allow" });
+				expect(laya).toHaveBeenCalledTimes(1);
+				expect(observedState?.latest_user_request).toBe("Update the source file we discussed.");
+				expect(observedState?.recent_conversation).toContain(
+					"user: For this task, do not modify generated catalog files.",
+				);
+				expect(observedState?.recent_conversation).toContain("user: Update the source file we discussed.");
+			} finally {
+				laya.mockRestore();
+			}
+		});
 
 		it("emits requested before waiting and resolved after approval", async () => {
 			const events: Array<{ type: string; approved?: boolean }> = [];
@@ -2393,10 +2454,10 @@ describe("ExtensionRunner", () => {
 			]);
 			delete globalState.__approvalEvents;
 		});
-		it("uses a high-confidence automode allow without an interactive UI", async () => {
+		it("uses an automode allow directly without an interactive UI", async () => {
 			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
 			const reviewer = {
-				review: vi.fn(async () => ({ decision: "allow" as const, probability: 0.99, confidence: 0.99 })),
+				review: vi.fn(async () => ({ decision: "allow" as const })),
 			};
 			const runner = new ExtensionRunner(
 				[],
@@ -2478,10 +2539,10 @@ describe("ExtensionRunner", () => {
 			expect(execute).toHaveBeenCalledTimes(1);
 		});
 
-		it("denies an automode rejection before the wrapped tool runs", async () => {
+		it("directly rejects an automode deny before the wrapped tool runs", async () => {
 			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
 			const reviewer = {
-				review: vi.fn(async () => ({ decision: "deny" as const, probability: 0.99, confidence: 0.99 })),
+				review: vi.fn(async () => ({ decision: "deny" as const })),
 			};
 			const runner = new ExtensionRunner(
 				[],
@@ -2511,15 +2572,10 @@ describe("ExtensionRunner", () => {
 			expect(execute).not.toHaveBeenCalled();
 		});
 
-		it("falls back to the interactive prompt for an ambiguous automode review", async () => {
+		it("falls back to the interactive prompt when an automode review is unavailable", async () => {
 			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
 			const reviewer = {
-				review: vi.fn(async () => ({
-					decision: "ask_human" as const,
-					recommendation: "allow" as const,
-					probability: 0.71,
-					confidence: 0.62,
-				})),
+				review: vi.fn(async () => ({ decision: "unavailable" as const, reason: "invalid review" })),
 			};
 			const runner = new ExtensionRunner(
 				[],
@@ -2550,6 +2606,43 @@ describe("ExtensionRunner", () => {
 			expect(reviewer.review).toHaveBeenCalledTimes(1);
 			expect(select).toHaveBeenCalledTimes(1);
 			expect(execute).toHaveBeenCalledTimes(1);
+			expect(select).toHaveBeenCalledWith(expect.stringContaining("Automode review unavailable: invalid review"), [
+				"Approve",
+				"Deny",
+			]);
+		});
+		it("fails closed on unavailable automode reviews without an interactive UI", async () => {
+			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));
+			const reviewer = {
+				review: vi.fn(async () => ({ decision: "unavailable" as const, reason: "judge unavailable" })),
+			};
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ toolApprovalReviewer: reviewer },
+			);
+			const wrapper = new ExtensionToolWrapper({ ...approvalTool, execute }, runner);
+
+			await expect(
+				wrapper.execute("call-automode-unavailable", {} as never, undefined, undefined, {
+					sessionManager,
+					modelRegistry,
+					model: undefined,
+					isIdle: () => true,
+					hasQueuedMessages: () => false,
+					abort: () => {},
+					settings: Settings.isolated({ "tools.approvalMode": "automode" }),
+				}),
+			).rejects.toThrow("requires approval but no interactive UI available");
+			expect(reviewer.review).toHaveBeenCalledTimes(1);
+			expect(execute).not.toHaveBeenCalled();
 		});
 		it("keeps an explicit user prompt outside the automode reviewer", async () => {
 			const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "executed" }] }));

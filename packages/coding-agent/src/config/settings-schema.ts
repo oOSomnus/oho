@@ -4101,7 +4101,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Approvals",
 			label: "Tool Approval",
 			description:
-				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Automode' uses ordinary approval for write tools and asks the configured judge to review exec tools, then falls back to interactive confirmation when uncertain. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
+				"Default approval behavior for tool calls. 'Always ask' auto-approves read-only tools only. 'Write' auto-approves read and workspace-write tools. 'Automode' uses ordinary approval for write tools and asks the configured judge to review exec tools, then falls back to interactive confirmation when the review is unavailable. 'Yolo' auto-approves all tiers; user policy may still prompt or block.",
 			options: [
 				{
 					value: "always-ask",
@@ -4118,7 +4118,7 @@ export const SETTINGS_SCHEMA = {
 					value: "automode",
 					label: "Automode (exec review)",
 					description:
-						"Use ordinary approval for write tools and ask the configured judge to review exec tools; ambiguous or unavailable reviews require interactive confirmation.",
+						"Use ordinary approval for write tools and ask the configured judge to review exec tools; unavailable reviews require interactive confirmation.",
 				},
 				{
 					value: "yolo",

@@ -18,7 +18,7 @@ import {
 	resolveApprovalFromContext,
 	truncateForPrompt,
 } from "../../tools/approval";
-import { formatToolApprovalReviewRecommendation, type ToolApprovalReview } from "../../tools/approval-automode";
+import { formatToolApprovalReviewUnavailable, type ToolApprovalReview } from "../../tools/approval-automode";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
@@ -366,12 +366,12 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 
 			if (!automodeApproved) {
 				const uiContext = this.runner.getUIContext();
-				const recommendation = automodeReview ? formatToolApprovalReviewRecommendation(automodeReview) : undefined;
+				const unavailableNote = automodeReview ? formatToolApprovalReviewUnavailable(automodeReview) : undefined;
 				const safetyPrompt =
 					pendingSafetyChecks.length > 0
 						? `${basePrompt}\nProvider safety checks:\n${safetyCheckLines(pendingSafetyChecks).join("\n")}`
 						: basePrompt;
-				const approvalPrompt = recommendation ? `${safetyPrompt}\n\n${recommendation}` : safetyPrompt;
+				const approvalPrompt = unavailableNote ? `${safetyPrompt}\n\n${unavailableNote}` : safetyPrompt;
 				let choice: string | undefined;
 				try {
 					choice = await uiContext.select(approvalPrompt, ["Approve", "Deny"]);

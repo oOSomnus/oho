@@ -9,7 +9,7 @@ import toolApprovalAutomodePrompt from "../prompts/system/tool-approval-automode
 import { Semaphore } from "../task/parallel";
 import { truncateForPrompt } from "./approval";
 
-export type ToolApprovalReviewChoice = "allow" | "deny" | "ask_human";
+export type ToolApprovalReviewChoice = "allow" | "deny";
 
 export interface ToolApprovalReviewRequest {
 	toolCallId: string;
@@ -20,9 +20,6 @@ export interface ToolApprovalReviewRequest {
 
 export interface ToolApprovalReview {
 	decision: ToolApprovalReviewChoice | "unavailable";
-	recommendation?: ToolApprovalReviewChoice;
-	probability?: number;
-	confidence?: number;
 	model?: string;
 	reason?: string;
 }
@@ -39,19 +36,21 @@ export interface ToolApprovalAutomodeDependencies {
 	getSessionId?: () => string | undefined;
 	getModel: () => Model | undefined;
 	getCwd: () => string;
-	getLatestUserText: () => string | undefined;
+	getConversationContext: () => {
+		latestUserText: string | undefined;
+		recentMessages: string | undefined;
+	};
 	obfuscateText?: (text: string) => string;
 	createJudge?: (deps: JudgeDeps) => Judge;
 }
 
-const REVIEW_TIMEOUT_MS = 10_000;
+// The deadline includes queueing and cold CPU model startup, not just inference.
+const REVIEW_TIMEOUT_MS = 30_000;
 const REVIEW_CONCURRENCY = 2;
 const STATE_TEXT_LIMIT = 4_000;
 const OPERATION_TEXT_LIMIT = 2_000;
+const RECENT_CONVERSATION_TEXT_LIMIT = 6_000;
 const REASON_TEXT_LIMIT = 320;
-const ALLOW_WRITE_THRESHOLD = 0.9;
-const ALLOW_EXEC_THRESHOLD = 0.97;
-const DENY_THRESHOLD = 0.95;
 
 const AUTOMODE_QUESTION: ChoiceQuestion<ToolApprovalReviewChoice> = {
 	type: "choice",
@@ -59,15 +58,10 @@ const AUTOMODE_QUESTION: ChoiceQuestion<ToolApprovalReviewChoice> = {
 	criteria: {
 		allow: null,
 		deny: null,
-		ask_human: null,
 	},
 };
 
 const AUTOMODE_QUESTIONS = { decision: AUTOMODE_QUESTION };
-
-function finiteProbability(value: unknown): number | undefined {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : undefined;
-}
 
 function boundedText(value: string | undefined, maxChars: number, obfuscate?: (text: string) => string): string {
 	if (!value) return "(none)";
@@ -86,31 +80,17 @@ function abortError(signal: AbortSignal): Error {
 	return signal.reason instanceof Error ? signal.reason : new Error("Tool approval review aborted");
 }
 
-function thresholdForAllow(tier: ToolTier): number {
-	return tier === "exec" ? ALLOW_EXEC_THRESHOLD : ALLOW_WRITE_THRESHOLD;
-}
-
-function decisionFor(
-	choice: ToolApprovalReviewChoice,
-	probability: number | undefined,
-	confidence: number | undefined,
-	tier: ToolTier,
-): ToolApprovalReview["decision"] {
-	if (choice === "ask_human") return "ask_human";
-	if (probability === undefined || confidence === undefined) return "ask_human";
-	const threshold = choice === "deny" ? DENY_THRESHOLD : thresholdForAllow(tier);
-	return probability >= threshold && confidence >= threshold ? choice : "ask_human";
-}
-
 function stateFor(
 	request: ToolApprovalReviewRequest,
 	latestUserText: string | undefined,
+	recentMessages: string | undefined,
 	cwd: string,
 	obfuscate?: (text: string) => string,
 ): Record<string, string> {
 	const redact = (text: string): string => (obfuscate ? obfuscate(text) : text);
 	return {
 		latest_user_request: boundedText(latestUserText, STATE_TEXT_LIMIT, obfuscate),
+		recent_conversation: boundedText(recentMessages, RECENT_CONVERSATION_TEXT_LIMIT, obfuscate),
 		working_directory: boundedText(shortenPath(redact(cwd)), STATE_TEXT_LIMIT),
 		tool_name: request.toolName,
 		tier: request.tier,
@@ -142,11 +122,13 @@ export class ToolApprovalAutomodeReviewer implements ToolApprovalReviewer {
 					onUsage,
 				});
 				const obfuscate = this.#dependencies.obfuscateText;
+				const conversationContext = this.#dependencies.getConversationContext();
 				const result = await judge.judge(
 					{
 						state: stateFor(
 							request,
-							this.#dependencies.getLatestUserText(),
+							conversationContext.latestUserText,
+							conversationContext.recentMessages,
 							this.#dependencies.getCwd(),
 							obfuscate,
 						),
@@ -161,14 +143,8 @@ export class ToolApprovalAutomodeReviewer implements ToolApprovalReviewer {
 				if (typeof answer.choice !== "string" || !Object.hasOwn(AUTOMODE_QUESTION.criteria, answer.choice)) {
 					return { decision: "unavailable", model: result.model, reason: "invalid judgment choice" };
 				}
-				const probability = finiteProbability(answer.probabilities[answer.choice]);
-				const confidence = finiteProbability(answer.confidence);
-				const decision = decisionFor(answer.choice, probability, confidence, request.tier);
 				return {
-					decision,
-					...(decision === "ask_human" ? { recommendation: answer.choice } : {}),
-					...(probability !== undefined ? { probability } : {}),
-					...(confidence !== undefined ? { confidence } : {}),
+					decision: answer.choice,
 					model: result.model,
 				};
 			} finally {
@@ -182,13 +158,8 @@ export class ToolApprovalAutomodeReviewer implements ToolApprovalReviewer {
 	}
 }
 
-export function formatToolApprovalReviewRecommendation(review: ToolApprovalReview): string | undefined {
-	if (review.decision === "unavailable") {
-		const reason = review.reason ? boundedReason(review.reason) : undefined;
-		return `Automode review unavailable${reason ? `: ${reason}` : "."}`;
-	}
-	if (review.decision !== "ask_human" || review.recommendation === undefined) return undefined;
-	const probability = review.probability === undefined ? "n/a" : review.probability.toFixed(2);
-	const confidence = review.confidence === undefined ? "n/a" : review.confidence.toFixed(2);
-	return `Automode recommendation: ${review.recommendation}; probability ${probability}; confidence ${confidence}.`;
+export function formatToolApprovalReviewUnavailable(review: ToolApprovalReview): string | undefined {
+	if (review.decision !== "unavailable") return undefined;
+	const reason = review.reason ? boundedReason(review.reason) : undefined;
+	return `Automode review unavailable${reason ? `: ${reason}` : "."}`;
 }

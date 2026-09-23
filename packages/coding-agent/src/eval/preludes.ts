@@ -2,7 +2,7 @@ import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolAp
 import { untilAborted } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../tools";
 import { denyError, formatApprovalPrompt, resolveApproval, resolveApprovalFromContext } from "../tools/approval";
-import { formatToolApprovalReviewRecommendation, type ToolApprovalReview } from "../tools/approval-automode";
+import { formatToolApprovalReviewUnavailable, type ToolApprovalReview } from "../tools/approval-automode";
 /** Host context supplied when an eval prelude calls back out of its language VM. */
 export interface EvalPreludeContext {
 	/** Live owning session; authorization is always resolved against its current preludes. */
@@ -118,8 +118,8 @@ async function approvePreludeInvocation(
 				`Set tools.approval.${definition.name}: allow, configure the automode judge, or use an interactive UI.`,
 		);
 	}
-	const recommendation = automodeReview ? formatToolApprovalReviewRecommendation(automodeReview) : undefined;
-	const prompt = recommendation ? `${operation}\n\n${recommendation}` : operation;
+	const unavailableNote = automodeReview ? formatToolApprovalReviewUnavailable(automodeReview) : undefined;
+	const prompt = unavailableNote ? `${operation}\n\n${unavailableNote}` : operation;
 	const choice = await untilAborted(context.signal, () => ui.select(prompt, ["Approve", "Deny"]));
 	if (choice !== "Approve") throw new Error(`Eval prelude call denied by user: ${definition.name}`);
 }
