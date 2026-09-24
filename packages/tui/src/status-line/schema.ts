@@ -27,6 +27,7 @@ export const STATUS_LINE_SEGMENT_IDS = [
 	"collab",
 	"stream",
 	"vim",
+	"judge",
 ] as const;
 
 /** One identifier from the supported status-line segment catalog. */

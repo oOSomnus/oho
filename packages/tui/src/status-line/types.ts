@@ -91,6 +91,8 @@ export interface SegmentContext {
 	options: StatusLineSegmentOptions;
 	/** Render the model segment's thinking level as a compact leading glyph. */
 	compactThinkingLevel: boolean;
+	/** Laya typed-decision judge worker state; omitted when idle or hidden. */
+	judgeStatus?: "loading" | "ready" | "failed";
 	/** Key-sorted extension/hook status values. Segment renderers sanitize before display. */
 	hookStatuses?: readonly string[];
 	planMode: {

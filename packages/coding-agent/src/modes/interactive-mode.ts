@@ -3702,15 +3702,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (!this.#layaJudgeLoadStateUnsubscribe) {
 			this.#layaJudgeLoadStateUnsubscribe = layaJudgeClient.subscribeLoadState(state => {
-				const text =
-					state === "loading"
-						? "Laya judge: loading"
-						: state === "ready"
-							? "Laya judge: ready"
-							: state === "failed"
-								? "Laya judge: failed; next review will retry"
-								: undefined;
-				this.setHookStatus("laya-judge", text);
+				this.statusLine.setJudgeStatus(state === "idle" ? undefined : state);
+				this.ui.requestRender();
 			});
 		}
 		layaJudgeClient.prewarm();
@@ -3721,7 +3714,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!unsubscribe) return;
 		this.#layaJudgeLoadStateUnsubscribe = undefined;
 		unsubscribe();
-		this.setHookStatus("laya-judge", undefined);
+		this.statusLine.setJudgeStatus(undefined);
 	}
 
 	async #applyPlanModeModel(): Promise<void> {

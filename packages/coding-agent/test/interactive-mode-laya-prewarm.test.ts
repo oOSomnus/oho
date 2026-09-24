@@ -94,7 +94,7 @@ describe("InteractiveMode Laya judge prewarm", () => {
 	}
 
 	function renderedStatus(): string {
-		return Bun.stripANSI(mode.statusLine.render(120).join("\n"));
+		return Bun.stripANSI(mode.statusLine.renderBottomBar(120, "full"));
 	}
 
 	it("prewarms the primary Laya judge and renders its load states in automode", async () => {
@@ -107,12 +107,14 @@ describe("InteractiveMode Laya judge prewarm", () => {
 		expect(prewarm).toHaveBeenCalledTimes(1);
 		const loadState = states[0];
 		if (!loadState) throw new Error("Expected a Laya load-state subscriber");
+		mode.statusLine.setComposerStyle({ statusAttachment: "none", bottomBar: "full", bottomBarGap: false });
+		const initialLineCount = mode.statusLine.render(120).length;
+		expect(initialLineCount).toBe(1);
 		for (const state of ["loading", "ready", "failed"] as const) {
 			loadState(state);
 			const rendered = renderedStatus();
-			expect(rendered).toContain(
-				state === "failed" ? "Laya judge: failed; next review will retry" : `Laya judge: ${state}`,
-			);
+			expect(rendered).toContain(state === "failed" ? "Judge retry" : "Judge");
+			expect(mode.statusLine.render(120)).toHaveLength(initialLineCount);
 		}
 	});
 
@@ -124,7 +126,7 @@ describe("InteractiveMode Laya judge prewarm", () => {
 
 		expect(prewarm).not.toHaveBeenCalled();
 		expect(subscribe).not.toHaveBeenCalled();
-		expect(renderedStatus()).not.toContain("Laya judge:");
+		expect(renderedStatus()).not.toContain("Judge");
 	});
 
 	it("does not prewarm or render a non-Laya primary judge in automode", async () => {
@@ -136,7 +138,7 @@ describe("InteractiveMode Laya judge prewarm", () => {
 
 		expect(prewarm).not.toHaveBeenCalled();
 		expect(subscribe).not.toHaveBeenCalled();
-		expect(renderedStatus()).not.toContain("Laya judge:");
+		expect(renderedStatus()).not.toContain("Judge");
 	});
 
 	it("rechecks approval mode and judge-role changes while the mode is active", async () => {
@@ -147,19 +149,19 @@ describe("InteractiveMode Laya judge prewarm", () => {
 		await mode.init();
 		expect(prewarm).toHaveBeenCalledTimes(1);
 		states[0]?.("ready");
-		expect(renderedStatus()).toContain("Laya judge: ready");
+		expect(renderedStatus()).toContain("Judge");
 
 		session.settings.set("tools.approvalMode", "yolo");
-		expect(renderedStatus()).not.toContain("Laya judge:");
+		expect(renderedStatus()).not.toContain("Judge");
 		expect(prewarm).toHaveBeenCalledTimes(1);
 
 		session.settings.set("tools.approvalMode", "automode");
 		expect(prewarm).toHaveBeenCalledTimes(2);
 		states.at(-1)?.("loading");
-		expect(renderedStatus()).toContain("Laya judge: loading");
+		expect(renderedStatus()).toContain("Judge");
 
 		session.settings.setModelRole("judge", "anthropic/claude-sonnet-4-5");
-		expect(renderedStatus()).not.toContain("Laya judge:");
+		expect(renderedStatus()).not.toContain("Judge");
 		expect(prewarm).toHaveBeenCalledTimes(2);
 
 		session.settings.setModelRole("judge", "laya/typed-decisions");
@@ -170,14 +172,14 @@ describe("InteractiveMode Laya judge prewarm", () => {
 		session.settings.set("tools.approvalMode", "automode");
 		session.settings.setModelRole("judge", "laya/typed-decisions");
 		const { publish } = installLayaSpies();
-		const setHookStatus = vi.spyOn(mode, "setHookStatus");
+		const setJudgeStatus = vi.spyOn(mode.statusLine, "setJudgeStatus");
 
 		await mode.init();
 		mode.stop();
-		setHookStatus.mockClear();
+		setJudgeStatus.mockClear();
 		publish("ready");
 
-		expect(setHookStatus).not.toHaveBeenCalled();
+		expect(setJudgeStatus).not.toHaveBeenCalled();
 	});
 
 	it("does not prewarm Laya while rendering a saved session", async () => {
