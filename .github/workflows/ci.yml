@@ -236,19 +236,13 @@ jobs:
            if: github.event_name == 'pull_request'
 
          # ---- PR path: build checkout-owned Linux x64 addons serially ----
-         - name: Build Linux x64 baseline addon
+         - name: Build Linux x64 addons
            if: github.event_name == 'pull_request'
            uses: ./.github/actions/bazel-natives
            with:
-              targets: linux-x64-baseline
-              dest: bazel-bin/natives-linux-x64-baseline
-              cache-scope: linux
-         - name: Build Linux x64 modern addon
-           if: github.event_name == 'pull_request'
-           uses: ./.github/actions/bazel-natives
-           with:
-              targets: linux-x64-modern
-              dest: bazel-bin/natives-linux-x64-modern
+              targets: linux-x64-baseline linux-x64-modern
+              dest: bazel-bin
+              serial: true
               cache-scope: linux
          # A corrupt or ABI-incompatible addon must fail here, not as a
          # confusing dlopen error in every downstream test shard.
