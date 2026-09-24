@@ -344,3 +344,17 @@ Location: `packages/*/CHANGELOG.md` (per package).
 2. Run `bun run release`.
 
 The script handles version bump, CHANGELOG finalization, commit, tag, publish, and adding new `[Unreleased]` sections.
+
+## Agent skills
+
+### Issue tracker
+
+工单、规格说明和路线图存放于本仓库的 GitHub Issues；使用 `gh` CLI，并以中文撰写内容。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用五个默认 triage 标签；具体映射见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+单上下文：根目录 `CONTEXT.md` 和 `docs/adr/`。见 `docs/agents/domain.md`。
