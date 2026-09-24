@@ -2006,6 +2006,7 @@ export class AgentSession {
 				this.#modelMentions.syncFromBranch();
 			},
 			resetAdvisorRuntimes: (reason?: string) => this.#advisors.resetAllRuntimes(reason),
+			rebaseAdvisorPrefix: reason => this.#advisors.rebaseDeliveredPrefixes(reason),
 			rebaseAfterCompaction: () => this.#stats.rebaseAfterCompaction(),
 			recordAnchoredHistoryRewrite: tokensRemoved => this.#stats.recordAnchoredHistoryRewrite(tokensRemoved),
 			getContextBreakdown: options => this.getContextBreakdown(options),
@@ -3094,7 +3095,7 @@ export class AgentSession {
 
 	async #persistTurnMessagesForMidRunCompaction(context: AgentTurnEndContext | undefined): Promise<boolean> {
 		if (!context) return true;
-		const turnMessages = [context.message, ...context.toolResults];
+		const turnMessages = [context.message, ...context.toolResults, ...(context.additionalMessages ?? [])];
 		for (const message of turnMessages) {
 			await this.#waitForSessionMessagePersistence(message);
 		}
@@ -4274,10 +4275,10 @@ export class AgentSession {
 		}
 		// A computer call's event input is a synthetic {actions, pendingSafetyChecks}
 		// view, not the execution params — a revision cannot map back onto them.
-		if (callResult?.input !== undefined && !computer) {
-			return { args: callResult.input };
-		}
-		return undefined;
+		const args = callResult?.input !== undefined && !computer ? callResult.input : undefined;
+		const additionalContext = callResult?.additionalContext;
+		if (args === undefined && additionalContext === undefined) return undefined;
+		return { args, additionalContext };
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
@@ -5443,10 +5444,11 @@ export class AgentSession {
 	/**
 	 * Wait for active advisor reviews and their emitted card events before a
 	 * headless caller disposes the session. Returns `false` and logs work disposal
-	 * will abandon when the shared deadline expires or an advisor fails.
+	 * will abandon when the shared deadline expires or an advisor fails;
+	 * `waitThroughRecovery` waits through a failing advisor's fallback recovery.
 	 */
-	waitForAdvisorCatchup(timeoutMs: number): Promise<boolean> {
-		return this.#advisors.waitForAdvisorCatchup(timeoutMs);
+	waitForAdvisorCatchup(timeoutMs: number, options?: { waitThroughRecovery?: boolean }): Promise<boolean> {
+		return this.#advisors.waitForAdvisorCatchup(timeoutMs, options);
 	}
 
 	async drainAsyncJobDeliveriesForAcp(options?: { timeoutMs?: number }): Promise<boolean> {

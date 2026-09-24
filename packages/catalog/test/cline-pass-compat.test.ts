@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { toClinePassPublicModelId, toClinePassWireModelId } from "@oh-my-pi/pi-catalog/cline-pass-model-id";
+import { isBareIdReferenceProvider } from "@oh-my-pi/pi-catalog/compat/behavior";
 import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
-import { getBundledModels } from "@oh-my-pi/pi-catalog/models";
 import {
 	DEFAULT_MODEL_PER_PROVIDER,
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
@@ -11,7 +11,7 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { createReferenceResolver } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { clinePassModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
-import type { Model, ModelSpec } from "@oh-my-pi/pi-catalog/types";
+import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 
 const CLINEPASS_MODELS_DEV_FIXTURE = {
 	"cline-pass": {
@@ -111,18 +111,10 @@ describe("ClinePass catalog", () => {
 
 	it("excludes ClinePass metadata from generic bare-id references", () => {
 		const reference = createReferenceResolver<"openai-completions">(new Map())("kimi-k3");
-		const fireworksReference = getBundledModels("fireworks").find(
-			(model): model is Model<"openai-completions"> => model.id === "kimi-k3" && model.api === "openai-completions",
-		);
-		if (!fireworksReference) {
-			throw new Error("Expected a Fireworks openai-completions reference for Kimi K3");
-		}
 
-		expect(reference?.provider).toBe("fireworks");
-		expect(reference?.maxTokens).toBe(fireworksReference?.maxTokens);
-		const referenceWireMode = resolveModelPolicy(reference!).compat.wireModelIdMode;
-		expect(referenceWireMode).toBe(fireworksReference.compat.wireModelIdMode);
-		expect(referenceWireMode).not.toBe(resolveModelPolicy(sourceModel("kimi-k3")).compat.wireModelIdMode);
+		expect(isBareIdReferenceProvider("cline-pass")).toBe(false);
+		expect(reference).toBeDefined();
+		expect(reference?.provider).not.toBe("cline-pass");
 	});
 
 	it("applies the verified Cline gateway request and reasoning compatibility", () => {

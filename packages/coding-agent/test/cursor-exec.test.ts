@@ -3,7 +3,13 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
-import type { AgentEvent, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import {
+	type AgentEvent,
+	type AgentTool,
+	type AgentToolContext,
+	TOOL_RESULT_ADDITIONAL_CONTEXT,
+	type ToolResultWithAdditionalContext,
+} from "@oh-my-pi/pi-agent-core";
 import { type BlockState, handleServerMessage, type ToolCallState } from "@oh-my-pi/pi-ai/providers/cursor";
 import { piTruncation } from "@oh-my-pi/pi-ai/providers/cursor/exec-modern";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai/types";
@@ -2106,5 +2112,98 @@ describe("CursorExecHandlers Pi frame translation", () => {
 		await handlers.piLs({ toolCallId: "c1", args: { path: "" } } as never);
 
 		expect(calls[0]).toEqual({ path: "." });
+	});
+});
+
+describe("CursorExecHandlers passive tool context", () => {
+	function contextRunner(): ExtensionRunner {
+		return {
+			...passthroughRunner(),
+			emitToolCall: async () => ({ additionalContext: "hook context" }),
+		} as unknown as ExtensionRunner;
+	}
+
+	function probeTool(fail: boolean): AgentTool {
+		return {
+			name: "probe",
+			label: "Probe",
+			description: "Reports passive context",
+			parameters: type({}),
+			approval: "read",
+			async execute(_toolCallId, _params, _signal, _onUpdate, context) {
+				context?.addAdditionalContext?.("tool context");
+				if (fail) throw new Error("probe failed");
+				return { content: [{ type: "text", text: "ok" }], details: undefined };
+			},
+		} as AgentTool;
+	}
+
+	it("attaches tool and hook context to the result, dropping hook context when the call fails", async () => {
+		for (const [fail, expected] of [
+			[false, "tool context\n\nhook context"],
+			[true, "tool context"],
+		] as const) {
+			const handlers = new CursorExecHandlers({
+				cwd: os.tmpdir(),
+				tools: new Map<string, Tool>([
+					["probe", new ExtensionToolWrapper(probeTool(fail), contextRunner()) as unknown as Tool],
+				]),
+				getToolContext: () => yoloToolContext(),
+			});
+
+			const result = (await handlers.mcp({
+				name: "probe",
+				providerIdentifier: "pi-agent",
+				toolName: "probe",
+				toolCallId: `probe-${fail}`,
+				args: {},
+				rawArgs: {},
+			})) as ToolResultWithAdditionalContext;
+
+			expect(result.isError).toBe(fail);
+			expect(result[TOOL_RESULT_ADDITIONAL_CONTEXT]).toBe(expected);
+			// The carrier is symbol-keyed and never reaches serialized history.
+			expect(JSON.stringify(result)).not.toContain("tool context");
+		}
+	});
+	it("preserves automode approval context while collecting passive tool context", async () => {
+		const settings = Settings.isolated({ "tools.approvalMode": "automode" });
+		let approvedToolCallId: string | undefined;
+		const tool: AgentTool = {
+			name: "mcp__ops__deploy",
+			label: "deploy",
+			description: "",
+			parameters: type({}),
+			approval: "exec",
+			async execute(_toolCallId, _args, _signal, _onUpdate, context) {
+				approvedToolCallId = context?.automodeApprovedToolCallId;
+				context?.addAdditionalContext?.("deployment context");
+				return { content: [{ type: "text", text: "deployed" }] };
+			},
+		} as AgentTool;
+		const handlers = new CursorExecHandlers({
+			cwd: os.tmpdir(),
+			tools: new Map([[tool.name, tool]]),
+			getToolContext: () =>
+				({
+					settings,
+					toolApprovalReviewer: { review: async () => ({ decision: "allow" as const }) },
+				}) as unknown as AgentToolContext,
+		});
+		const call = {
+			name: tool.name,
+			toolName: tool.name,
+			toolCallId: "approved-deploy",
+			providerIdentifier: "ops",
+			args: {},
+			rawArgs: {},
+		};
+
+		expect(await handlers.mcpApprovalPreflight(call)).toBe(true);
+		const result = (await handlers.mcp(call)) as ToolResultWithAdditionalContext;
+
+		expect(approvedToolCallId).toBe(call.toolCallId);
+		expect(result.isError).toBe(false);
+		expect(result[TOOL_RESULT_ADDITIONAL_CONTEXT]).toBe("deployment context");
 	});
 });
