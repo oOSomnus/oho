@@ -52,15 +52,6 @@ You are responsible for the code, regardless of who or what generated it.
 
 ## Pull request requirements
 
-Every pull request body **MUST include at least one sentence written by you, in
-your own words**, explaining what changed and why. A generated summary, pasted
-agent transcript, or checklist alone does not satisfy this requirement.
-
-One honest line is enough:
-
-> I reviewed the full diff; this change fixes duplicate PR reviews by reusing
-> the existing delivery guard.
-
 You **MUST verify that the change works as intended**. `bun check` and automated
 tests are expected where relevant, but they are not proof that the behavior
 works. Exercise the changed path yourself and report the exact scenario and

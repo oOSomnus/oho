@@ -1,6 +1,6 @@
 ## What
 
-<!-- Brief description of the change. Include at least one sentence in your own words explaining what changed and why, as required by CONTRIBUTING.md. -->
+<!-- Brief description of the change. -->
 
 ## Why
 

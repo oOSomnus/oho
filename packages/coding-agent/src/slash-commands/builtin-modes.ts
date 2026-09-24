@@ -5,6 +5,7 @@ import {
 	resolveCliModel,
 	type ResolveCliModelResult,
 } from "../config/model-resolver";
+import { SETTINGS_SCHEMA } from "../config/settings-schema";
 import type { SettingPath, Settings } from "../config/settings";
 import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
@@ -12,7 +13,7 @@ import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
-import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
+import type { ParsedSlashCommand, SlashCommandRuntime, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
 
 export function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
@@ -137,6 +138,62 @@ async function applyComputerUseToggle(session: AgentSession, enable: boolean): P
 		: "Computer use disabled for this session.";
 }
 
+const APPROVAL_MODE_VALUES = SETTINGS_SCHEMA["tools.approvalMode"].values;
+const APPROVAL_MODE_OPTIONS = SETTINGS_SCHEMA["tools.approvalMode"].ui.options;
+const APPROVAL_MODE_USAGE = `Usage: /permissions [${APPROVAL_MODE_VALUES.join("|")}]`;
+
+type ApprovalMode = (typeof APPROVAL_MODE_VALUES)[number];
+
+function parseApprovalMode(args: string): ApprovalMode | undefined {
+	const normalized = args.trim().toLowerCase();
+	return APPROVAL_MODE_VALUES.find(mode => mode === normalized);
+}
+
+function applyApprovalMode(settings: Settings, mode: ApprovalMode): string {
+	settings.set("tools.approvalMode", mode);
+	settings.override("tools.approvalMode", mode);
+	return `Approval mode set to ${mode}.`;
+}
+
+async function handleApprovalModeCommand(command: ParsedSlashCommand, runtime: SlashCommandRuntime): Promise<void> {
+	const mode = parseApprovalMode(command.args);
+	if (!mode) {
+		const message = command.args.trim()
+			? APPROVAL_MODE_USAGE
+			: `Current approval mode: ${runtime.settings.get("tools.approvalMode")}.\n${APPROVAL_MODE_USAGE}`;
+		await runtime.output(message);
+		return;
+	}
+	await runtime.output(applyApprovalMode(runtime.settings, mode));
+}
+
+async function handleApprovalModeCommandTui(
+	command: ParsedSlashCommand,
+	runtime: TuiSlashCommandRuntime,
+): Promise<void> {
+	const { ctx } = runtime;
+	try {
+		if (!command.args.trim()) {
+			const selected = await ctx.showHookSelector(
+				"Select tool approval mode",
+				APPROVAL_MODE_OPTIONS.map(({ label, description }) => ({ label, description })),
+			);
+			const mode = APPROVAL_MODE_OPTIONS.find(option => option.label === selected)?.value;
+			if (mode) ctx.showStatus(applyApprovalMode(ctx.settings, mode));
+			return;
+		}
+
+		const mode = parseApprovalMode(command.args);
+		if (!mode) {
+			ctx.showWarning(APPROVAL_MODE_USAGE);
+			return;
+		}
+		ctx.showStatus(applyApprovalMode(ctx.settings, mode));
+	} finally {
+		ctx.editor.setText("");
+	}
+}
+
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;
 
 function shortDetail(value: string, limit = AUTOCOMPLETE_DETAIL_LIMIT): string {
@@ -178,6 +235,16 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			runtime.ctx.showSettingsSelector();
 			runtime.ctx.editor.setText("");
 		},
+	},
+	{
+		name: "permissions",
+		icon: "shield",
+		description: "Change the tool approval mode",
+		allowArgs: true,
+		acpInputHint: `<${APPROVAL_MODE_VALUES.join("|")}>`,
+		subcommands: APPROVAL_MODE_OPTIONS.map(({ value, description }) => ({ name: value, description })),
+		handle: handleApprovalModeCommand,
+		handleTui: handleApprovalModeCommandTui,
 	},
 	{
 		name: "setup",
