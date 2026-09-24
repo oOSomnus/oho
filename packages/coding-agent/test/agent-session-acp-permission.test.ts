@@ -42,11 +42,18 @@ const boundaryCases: Array<[decision: "allow_always" | "reject_always", transiti
 ];
 /** Fake tool that records execute calls. */
 function makeFakeTool(name: string): AgentTool & { executeCalls: number } {
+	const approval =
+		name === "bash"
+			? { approval: "exec" as const }
+			: name === "delete" || name === "move"
+				? { approval: "write" as const }
+				: {};
 	const tool = {
 		name,
 		label: name,
 		description: `Fake ${name}`,
 		parameters: type({ "command?": "string" }),
+		...approval,
 		executeCalls: 0,
 		async execute() {
 			tool.executeCalls++;
@@ -340,6 +347,79 @@ it("delete and move tools request ACP permission before executing", async () => 
 	]);
 	expect(deleteTool.executeCalls).toBe(1);
 	expect(moveTool.executeCalls).toBe(1);
+});
+it("automode lets mode-approved ACP write-tier tools bypass client permission", async () => {
+	const deleteTool = makeFakeTool("delete");
+	const moveTool = makeFakeTool("move");
+	const bridge = makeBridge({ outcome: "selected", optionId: "allow_once", kind: "allow_once" });
+	const permissionSpy = spyOn(bridge, "requestPermission");
+	session = await createSession([deleteTool, moveTool], bridge, { "tools.approvalMode": "automode" });
+
+	await session.setActiveToolsByName(["delete", "move"]);
+	const wrappedDelete = session.agent.state.tools.find(t => t.name === "delete");
+	const wrappedMove = session.agent.state.tools.find(t => t.name === "move");
+
+	await wrappedDelete!.execute(
+		"call-delete",
+		{ path: "/tmp/gone.ts" },
+		undefined,
+		undefined as never,
+		undefined as never,
+	);
+	await wrappedMove!.execute(
+		"call-move",
+		{ oldPath: "/tmp/old.ts", newPath: "/tmp/new.ts" },
+		undefined,
+		undefined as never,
+		undefined as never,
+	);
+
+	expect(permissionSpy).not.toHaveBeenCalled();
+	expect(deleteTool.executeCalls).toBe(1);
+	expect(moveTool.executeCalls).toBe(1);
+});
+
+it("automode keeps exec-tier ACP calls behind client permission", async () => {
+	const bashTool = makeFakeTool("bash");
+	const bridge = makeBridge({ outcome: "selected", optionId: "allow_once", kind: "allow_once" });
+	const permissionSpy = spyOn(bridge, "requestPermission");
+	session = await createSession([bashTool], bridge, { "tools.approvalMode": "automode" });
+
+	await session.setActiveToolsByName(["bash"]);
+	const wrappedBash = session.agent.state.tools.find(t => t.name === "bash");
+	await wrappedBash!.execute(
+		"call-automode-bash",
+		{ command: "echo hi" },
+		undefined,
+		undefined as never,
+		undefined as never,
+	);
+
+	expect(permissionSpy).toHaveBeenCalledTimes(1);
+	expect(bashTool.executeCalls).toBe(1);
+});
+
+it("automode keeps explicit write-tier ACP prompts behind client permission", async () => {
+	const deleteTool = makeFakeTool("delete");
+	const bridge = makeBridge({ outcome: "selected", optionId: "allow_once", kind: "allow_once" });
+	const permissionSpy = spyOn(bridge, "requestPermission");
+	session = await createSession([deleteTool], bridge, {
+		"tools.approvalMode": "automode",
+		"tools.approval": { delete: "prompt" },
+	});
+
+	await session.setActiveToolsByName(["delete"]);
+	const wrappedDelete = session.agent.state.tools.find(t => t.name === "delete");
+	await wrappedDelete!.execute(
+		"call-automode-delete-prompt",
+		{ path: "/tmp/prompted.ts" },
+		undefined,
+		undefined as never,
+		undefined as never,
+	);
+
+	expect(permissionSpy).toHaveBeenCalledTimes(1);
+	expect(deleteTool.executeCalls).toBe(1);
 });
 
 it("top-level fallback preserves ACP permission for mounted destructive tools", async () => {

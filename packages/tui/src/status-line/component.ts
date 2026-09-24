@@ -531,6 +531,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#loopModeStatus: SegmentContext["loopMode"] = null;
 	#goalModeStatus: { enabled: boolean; paused: boolean } | null = null;
 	#vibeModeStatus: { enabled: boolean } | null = null;
+	#judgeStatus: SegmentContext["judgeStatus"];
 	#vimStatus: SegmentContext["vim"] = null;
 	/**
 	 * Injected aggregator that returns the aggregate tok/s of this session's
@@ -909,6 +910,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			return;
 		}
 		this.#vimStatus = next;
+		this.#invalidateStatusLineRenderCache();
+	}
+
+	setJudgeStatus(status: SegmentContext["judgeStatus"]): void {
+		if (this.#judgeStatus === status) return;
+		this.#judgeStatus = status;
 		this.#invalidateStatusLineRenderCache();
 	}
 
@@ -2181,6 +2188,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			options: segmentOptions ?? {},
 			compactThinkingLevel: this.#resolveSettings().compactThinkingLevel ?? false,
 			hookStatuses: this.#sortedHookStatuses,
+			judgeStatus: this.#settings.showHookStatus === false ? undefined : this.#judgeStatus,
 			planMode: this.#planModeStatus,
 			loopMode: this.#loopModeStatus,
 			prewalk:
@@ -2572,10 +2580,20 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const sepAnsi = theme.getFgAnsi("statusLineSep");
 		const subagentBadge = this.#subagentBadgeText();
 
-		// Collect visible segment contents
+		// An active judge status joins the left group unless the user's layout
+		// explicitly placed the segment on either side.
+		const hasConfiguredJudgeSegment =
+			effectiveSettings.leftSegments.includes("judge") || effectiveSettings.rightSegments.includes("judge");
+		const includeJudgeSegment =
+			layout !== "plain-right" && ctx.judgeStatus !== undefined && !hasConfiguredJudgeSegment;
 		const leftParts: string[] = [];
 		const leftSegIds: StatusLineSegmentId[] = [];
-		const leftSegmentIds = layout === "plain-right" ? [] : effectiveSettings.leftSegments;
+		const leftSegmentIds: readonly StatusLineSegmentId[] =
+			layout === "plain-right"
+				? []
+				: includeJudgeSegment
+					? [...effectiveSettings.leftSegments, "judge"]
+					: effectiveSettings.leftSegments;
 		for (const segId of leftSegmentIds) {
 			if (subagentBadge && segId === "subagents") continue;
 			// The band composer relocates the title to the working row's trailer.

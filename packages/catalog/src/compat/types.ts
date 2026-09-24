@@ -643,9 +643,10 @@ export interface CompiledProvider {
 	defaultModel: string;
 	/** Env vars consulted, in order, for the runtime API-key fallback. */
 	envVars?: string[];
+	/** The runtime exposes bundled models without requiring credentials. */
+	keyless?: boolean;
 	/** The runtime creates a model manager even without a valid API key. */
 	allowUnauthenticated?: boolean;
-	/** Successful runtime discovery replaces bundled provider models instead of merging. */
 	dynamicModelsAuthoritative?: boolean;
 	/** Generator backfills never copy reasoning/input/limits from same-id rows on other hosts. */
 	skipCrossProviderReferenceFills?: boolean;

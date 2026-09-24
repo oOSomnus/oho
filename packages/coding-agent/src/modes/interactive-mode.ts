@@ -64,7 +64,8 @@ import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
 import type { CollabHost } from "../collab/host";
 import { formatKeyHint, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
-import { formatModelString, type ResolvedModelRoleValue } from "../config/model-resolver";
+import { formatModelString, resolveRoleChain, type ResolvedModelRoleValue } from "../config/model-resolver";
+import { roleCandidatePool } from "../config/model-roles";
 import {
 	isSettingsInitialized,
 	onModelRolesChanged,
@@ -108,6 +109,7 @@ import {
 } from "../eval/judgment-batch-events";
 import { autosaveApprovedPlan, planSaveFileName } from "../plan-mode/plan-autosave";
 import { resolvePlanModelTransition } from "../plan-mode/model-transition";
+import { layaJudgeClient } from "../judgment/laya-client";
 import guidedGoalInterviewPrompt from "../prompts/goals/guided-goal-interview.md" with { type: "text" };
 import planFilenamePrompt from "../prompts/system/plan-filename.md" with { type: "text" };
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
@@ -1035,6 +1037,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** Extension-registered provider factories, applied in registration order (#4919). */
 	#autocompleteProviderFactories: AutocompleteProviderFactory[] = [];
 	#cleanupUnsubscribe?: () => void;
+	#layaJudgeLoadStateUnsubscribe?: () => void;
+	#prewarmLayaJudgeEnabled = true;
 	#signalTeardown?: SessionTeardown;
 	readonly #version: string;
 	readonly #startupChangelog: StartupChangelogSelection | undefined;
@@ -1578,6 +1582,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	async init(options: InteractiveModeInitOptions = {}): Promise<void> {
 		if (this.isInitialized) return;
+		this.#prewarmLayaJudgeEnabled = options.prewarmLayaJudge !== false;
 
 		this.keybindings = logger.time("InteractiveMode.init:keybindings", () => KeybindingsManager.create());
 
@@ -1890,9 +1895,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#syncConfigWarningHeader();
 		this.#eventBusUnsubscribers.push(
 			onModelRolesChanged(() => {
+				this.#prewarmLayaJudge();
 				void this.#reapplyPlanModeModelOnRoleChange();
 			}),
 		);
+		this.#eventBusUnsubscribers.push(
+			this.session.settings.onEffectiveChange(path => {
+				if (path === "tools.approvalMode") this.#prewarmLayaJudge();
+			}),
+		);
+		this.#prewarmLayaJudge();
 		this.#eventBusUnsubscribers.push(
 			this.session.subscribeCommandMetadataChanged(() => {
 				const retainedCommands = this.#pendingSlashCommands.filter(command => !command.name.startsWith("skill:"));
@@ -3667,6 +3679,42 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		this.#scheduleGoalContinuation();
+	}
+
+	/** Start the local typed-decision worker without blocking the first judge call. */
+	#prewarmLayaJudge(): void {
+		if (!this.#prewarmLayaJudgeEnabled) {
+			this.#clearLayaJudgeStatus();
+			return;
+		}
+		if (this.session.settings.get("tools.approvalMode") !== "automode") {
+			this.#clearLayaJudgeStatus();
+			return;
+		}
+		const [judgeRole] = resolveRoleChain(
+			"judge",
+			this.session.settings,
+			roleCandidatePool("judge", this.session.settings, this.session.modelRegistry),
+		);
+		if (judgeRole?.model.api !== "laya-local") {
+			this.#clearLayaJudgeStatus();
+			return;
+		}
+		if (!this.#layaJudgeLoadStateUnsubscribe) {
+			this.#layaJudgeLoadStateUnsubscribe = layaJudgeClient.subscribeLoadState(state => {
+				this.statusLine.setJudgeStatus(state === "idle" ? undefined : state);
+				this.ui.requestRender();
+			});
+		}
+		layaJudgeClient.prewarm();
+	}
+
+	#clearLayaJudgeStatus(): void {
+		const unsubscribe = this.#layaJudgeLoadStateUnsubscribe;
+		if (!unsubscribe) return;
+		this.#layaJudgeLoadStateUnsubscribe = undefined;
+		unsubscribe();
+		this.statusLine.setJudgeStatus(undefined);
 	}
 
 	async #applyPlanModeModel(): Promise<void> {
@@ -5708,6 +5756,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	stop(): void {
+		this.#clearLayaJudgeStatus();
 		this.#appearanceRefreshRequest = undefined;
 		this.#streamPublisher?.dispose();
 		this.#streamPublisher = undefined;
@@ -5883,6 +5932,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// pending input callback against a session that is already disposing.
 		this.#abortLoopCondition();
 		this.#cancelLoopAutoSubmit();
+		this.#clearLayaJudgeStatus();
 
 		// Surface progress before any asynchronous cleanup, including live commands
 		// and BTW history writes, so the user sees a reason for the pause.

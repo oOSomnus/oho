@@ -83,6 +83,7 @@ export * from "../task";
 export * from "../web/search";
 export * from "./ask";
 export * from "./ast-edit";
+export * from "./approval-automode";
 export * from "./ast-grep";
 export * from "./bash";
 export type {

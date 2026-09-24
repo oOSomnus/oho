@@ -142,28 +142,28 @@ describe("MCP Streamable HTTP failure diagnostics", () => {
 		}
 	});
 
-	it("distinguishes connection refusal from a reset", async () => {
-		const unused = Bun.listen({
-			hostname: "127.0.0.1",
-			port: 0,
-			socket: { data() {} },
-		});
-		const port = unused.port;
-		unused.stop(true);
+	it("maps connection refusal distinctly from a socket reset", async () => {
 		const transport = new HttpTransport({
 			type: "http",
-			url: `http://127.0.0.1:${port}/mcp`,
+			url: "http://127.0.0.1:1/mcp",
 			timeout: GUARD_TIMEOUT_MS,
 		});
-		await transport.connect();
+		const refused = Object.assign(new TypeError("fetch failed"), { code: "ECONNREFUSED" });
+		const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(refused);
+		try {
+			await transport.connect();
 
-		await expect(transport.request("tools/list")).rejects.toMatchObject({
-			transport: "http",
-			stage: "connect",
-			failure: "connect",
-			retryable: true,
-		});
-		await transport.close();
+			await expect(transport.request("tools/list")).rejects.toMatchObject({
+				transport: "http",
+				stage: "connect",
+				failure: "connect",
+				retryable: true,
+				code: "ECONNREFUSED",
+			});
+		} finally {
+			fetchSpy.mockRestore();
+			await transport.close();
+		}
 	});
 
 	it("classifies malformed JSON-RPC responses at the decode stage", async () => {

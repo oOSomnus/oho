@@ -22,6 +22,7 @@ import { invalidateToolSchemaMetadata } from "@oh-my-pi/pi-tui/status-line/conte
 import type { MemoryBackendStartOptions } from "../memory-backend/types";
 import toolRosterNoticePrompt from "../prompts/system/tool-roster-notice.md" with { type: "text" };
 import xdevMountNoticePrompt from "../prompts/system/xdev-mount-notice.md" with { type: "text" };
+import { resolveApproval } from "../tools/approval";
 import { isMCPToolName, normalizeToolNames } from "../tools/builtin-names";
 import { wrapToolWithMetaNotice } from "../tools/output-meta";
 import { isFilesystemSourcePath } from "../tools/path-utils";
@@ -837,6 +838,15 @@ export class SessionTools {
 					onUpdate: never,
 					ctx: AgentToolContext | undefined,
 				) => {
+					// Automode already approved this write-tier operation through the
+					// shared resolver; keep exec-tier calls behind the ACP client gate.
+					if (this.#host.settings.get("tools.approvalMode") === "automode") {
+						const userPolicies = (this.#host.settings.get("tools.approval") ?? {}) as Record<string, unknown>;
+						const approval = resolveApproval(target, args, "automode", userPolicies);
+						if (approval.policy === "allow" && approval.tier === "write") {
+							return await target.execute(toolCallId, args as never, signal, onUpdate, ctx as never);
+						}
+					}
 					const permissionIntent = getPermissionIntent(target.name, args);
 					if (!permissionIntent) {
 						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx as never);

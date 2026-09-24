@@ -24,6 +24,7 @@ import {
 } from "@oh-my-pi/pi-catalog/compat/context-window";
 import { applyCatalogMetrics, CatalogMetricsIndex } from "@oh-my-pi/pi-catalog/identity/metrics";
 import { readModelCache } from "@oh-my-pi/pi-catalog/model-cache";
+import { providerEntry } from "@oh-my-pi/pi-catalog/compat/providers";
 import {
 	createModelManager,
 	fingerprintStaticModels,
@@ -1418,8 +1419,10 @@ export class ModelRegistry {
 
 	#addImplicitDiscoverableProviders(configuredProviders: Set<string>): void {
 		const disabledProviders = getDisabledProviderIdsFromSettings(this.#settings);
-		for (const provider of ["local", "web"]) {
-			if (!disabledProviders.has(provider)) this.#keylessProviders.add(provider);
+		for (const provider of getBundledProviders()) {
+			if (providerEntry(provider)?.keyless === true && !disabledProviders.has(provider)) {
+				this.#keylessProviders.add(provider);
+			}
 		}
 		const hasOllamaEndpointOverride = Boolean(Bun.env.OLLAMA_BASE_URL?.trim() || Bun.env.OLLAMA_HOST?.trim());
 		if (!configuredProviders.has("ollama") && !disabledProviders.has("ollama")) {

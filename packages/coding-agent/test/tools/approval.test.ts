@@ -64,11 +64,13 @@ describe("resolveApproval tier matrix", () => {
 		["write", "read", "allow"],
 		["write", "write", "allow"],
 		["write", "exec", "prompt"],
+		["automode", "read", "allow"],
+		["automode", "write", "allow"],
+		["automode", "exec", "prompt"],
 		["yolo", "read", "allow"],
 		["yolo", "write", "allow"],
 		["yolo", "exec", "allow"],
 	];
-
 	for (const [mode, tier, policy] of cases) {
 		it(`${mode} resolves ${tier} tier to ${policy}`, () => {
 			const subject = tool(`${tier}_tool`, tier);

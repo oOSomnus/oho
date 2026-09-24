@@ -353,6 +353,9 @@ export const INTERRUPTED_THINKING_MESSAGE_TYPE = "interrupted-thinking";
 /** Custom message type for the transient checkpoint-active reminder. */
 export const CHECKPOINT_ACTIVE_REMINDER_TYPE = "checkpoint-active-reminder";
 
+/** Custom message type for transcript-only tool approval notices. */
+export const TOOL_APPROVAL_NOTICE_MESSAGE_TYPE = "tool-approval-notice";
+
 /** Metadata persisted with a hidden interrupted-thinking continuity message. */
 export interface InterruptedThinkingDetails {
 	interruptedAt: number;

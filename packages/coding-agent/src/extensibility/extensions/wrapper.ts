@@ -18,6 +18,7 @@ import {
 	resolveApprovalFromContext,
 	truncateForPrompt,
 } from "../../tools/approval";
+import { formatToolApprovalReviewUnavailable, type ToolApprovalReview } from "../../tools/approval-automode";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
@@ -261,10 +262,17 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			context !== undefined &&
 			Object.hasOwn(context, "acpApprovedArgs") &&
 			Bun.deepEquals(effectiveParams, context.acpApprovedArgs);
+		const automodeGrant =
+			approvalMode === "automode" &&
+			resolved.policy === "prompt" &&
+			resolved.source === "mode" &&
+			context?.automodeApprovedToolCallId === toolCallId &&
+			Object.hasOwn(context, "automodeApprovedArgs") &&
+			Bun.deepEquals(effectiveParams, context.automodeApprovedArgs);
 		const approvalCheck = {
 			required:
 				pendingSafetyChecks.length > 0 ||
-				(resolved.policy === "prompt" && !acpBypass && (explicitPrompt || !xdevBypass)),
+				(resolved.policy === "prompt" && !acpBypass && !automodeGrant && (explicitPrompt || !xdevBypass)),
 			reason: resolved.reason,
 		};
 
@@ -303,9 +311,43 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				});
 			};
 
+			const basePrompt = formatApprovalPrompt(this.tool, resolvedArgs, approvalCheck.reason);
+			const automodeEligible =
+				pendingSafetyChecks.length === 0 &&
+				approvalMode === "automode" &&
+				resolved.tier === "exec" &&
+				resolved.policy === "prompt" &&
+				resolved.source === "mode";
+			let automodeReview: ToolApprovalReview | undefined;
+			let automodeApproved = false;
+			if (automodeEligible) {
+				try {
+					automodeReview = await this.runner.reviewToolApproval(
+						{
+							toolCallId,
+							toolName: this.tool.name,
+							tier: resolved.tier,
+							operation: basePrompt,
+						},
+						signal,
+					);
+				} catch (err) {
+					const reason = err instanceof Error ? err.message : "automode review aborted";
+					await emitApprovalResolved(false, reason);
+					throw err;
+				}
+				if (automodeReview.decision === "allow") {
+					automodeApproved = true;
+					await emitApprovalResolved(true, "approved by automode");
+				} else if (automodeReview.decision === "deny") {
+					await emitApprovalResolved(false, "denied by automode");
+					throw new Error(`Tool call denied by automode: ${this.tool.name}`);
+				}
+			}
+
 			// Provider safety checks fail closed without an interactive prompt. Unlike
 			// ordinary tier approval, no setting or yolo mode may bypass this gate.
-			if (!this.runner.hasUI()) {
+			if (!automodeApproved && !this.runner.hasUI()) {
 				const reason = "no interactive UI available";
 				await emitApprovalResolved(false, reason);
 				if (pendingSafetyChecks.length > 0) {
@@ -318,31 +360,34 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 						`Options:\n` +
 						`  1. Set tools.approvalMode: yolo in /settings\n` +
 						`  2. Add tools.approval.${this.tool.name}: allow to config\n` +
-						`  3. Use an interactive UI to approve the tool call`,
+						`  3. Configure the automode judge or use an interactive UI to approve the tool call`,
 				);
 			}
 
-			const uiContext = this.runner.getUIContext();
-			const basePrompt = formatApprovalPrompt(this.tool, resolvedArgs, approvalCheck.reason);
-			const safetyPrompt =
-				pendingSafetyChecks.length > 0
-					? `${basePrompt}\nProvider safety checks:\n${safetyCheckLines(pendingSafetyChecks).join("\n")}`
-					: basePrompt;
-			let choice: string | undefined;
-			try {
-				choice = await uiContext.select(safetyPrompt, ["Approve", "Deny"]);
-			} catch (err) {
-				await emitApprovalResolved(false, err instanceof Error ? err.message : "approval aborted");
-				throw err;
-			}
-			const approved = choice === "Approve";
-			await emitApprovalResolved(approved, approved ? undefined : "denied by user");
-			if (!approved) {
-				throw new Error(`Tool call denied by user: ${this.tool.name}`);
-			}
-			if (pendingSafetyChecks.length > 0) {
-				if (!context) throw new Error("Provider safety approval context is unavailable");
-				context.providerSafetyApproved = true;
+			if (!automodeApproved) {
+				const uiContext = this.runner.getUIContext();
+				const unavailableNote = automodeReview ? formatToolApprovalReviewUnavailable(automodeReview) : undefined;
+				const safetyPrompt =
+					pendingSafetyChecks.length > 0
+						? `${basePrompt}\nProvider safety checks:\n${safetyCheckLines(pendingSafetyChecks).join("\n")}`
+						: basePrompt;
+				const approvalPrompt = unavailableNote ? `${safetyPrompt}\n\n${unavailableNote}` : safetyPrompt;
+				let choice: string | undefined;
+				try {
+					choice = await uiContext.select(approvalPrompt, ["Approve", "Deny"]);
+				} catch (err) {
+					await emitApprovalResolved(false, err instanceof Error ? err.message : "approval aborted");
+					throw err;
+				}
+				const approved = choice === "Approve";
+				await emitApprovalResolved(approved, approved ? undefined : "denied by user");
+				if (!approved) {
+					throw new Error(`Tool call denied by user: ${this.tool.name}`);
+				}
+				if (pendingSafetyChecks.length > 0) {
+					if (!context) throw new Error("Provider safety approval context is unavailable");
+					context.providerSafetyApproved = true;
+				}
 			}
 		}
 

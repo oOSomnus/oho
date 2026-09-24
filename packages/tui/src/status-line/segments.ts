@@ -210,6 +210,36 @@ const statusSegment: StatusLineSegment = {
 	},
 };
 
+const judgeSegment: StatusLineSegment = {
+	id: "judge",
+	render(ctx) {
+		const status = ctx.judgeStatus;
+		if (!status) return { content: "", visible: false };
+
+		let icon: string;
+		let label: string;
+		let color: ThemeColor;
+		switch (status) {
+			case "loading":
+				icon = theme.styledSymbol("status.pending", "muted");
+				label = "Judge";
+				color = "muted";
+				break;
+			case "ready":
+				icon = theme.styledSymbol("status.success", "success");
+				label = "Judge";
+				color = "success";
+				break;
+			case "failed":
+				icon = theme.styledSymbol("status.warning", "warning");
+				label = "Judge retry";
+				color = "warning";
+				break;
+		}
+		return { content: `${icon} ${theme.fg(color, label)}`, visible: true };
+	},
+};
+
 const modelSegment: StatusLineSegment = {
 	id: "model",
 	render(ctx) {
@@ -940,6 +970,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	collab: collabSegment,
 	stream: streamSegment,
 	vim: vimSegment,
+	judge: judgeSegment,
 };
 
 export function renderSegment(id: StatusLineSegmentId, ctx: SegmentContext): RenderedSegment {

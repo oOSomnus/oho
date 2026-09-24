@@ -159,12 +159,15 @@ describe("executeBash", () => {
 			data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
 		};
 		const frame = await encodeTerminalImage(image);
+		Settings.instance.set("tools.artifactHeadBytes", ARTIFACT_HEAD_BYTES_DEFAULT / 1024);
+		Settings.instance.set("tools.outputMaxColumns", 0);
 		const result = await executeBash(`printf '%s' ${shellQuote(frame)}; printf '%060000d\n' 0; printf tail; exit 7`, {
 			cwd: tempDir,
 			timeout: 5000,
 		});
 
 		expect(result.exitCode).toBe(7);
+		expect(result.truncated).toBe(true);
 		expect(result.images).toHaveLength(1);
 		expect(result.images?.[0]).toMatchObject({ type: "image", mimeType: "image/png" });
 		expect(result.output).toContain("tail");

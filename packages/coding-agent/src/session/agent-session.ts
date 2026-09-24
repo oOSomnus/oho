@@ -97,11 +97,18 @@ import {
 	logger,
 	postmortem,
 	prompt,
+	sanitizeText,
 	Snowflake,
 	stringProperty,
 	withTimeout,
 } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
+import {
+	replaceTabs,
+	shortenEmbeddedPaths,
+	TRUNCATE_LENGTHS,
+	truncateToWidth,
+} from "@oh-my-pi/pi-tui/render/render-utils";
 import { formatUsageResetWindow } from "@oh-my-pi/pi-tui/overlays/usage-display";
 import { loadAdvisorTranscriptCosts } from "../advisor";
 import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
@@ -214,6 +221,7 @@ import { isLowSignalTitleInput } from "../tiny/text";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
 import type { ImageAttachmentEntry, ToolSession } from "../tools";
 import { resolveApproval } from "../tools/approval";
+import type { ToolApprovalReviewChoice, ToolApprovalReviewRequest } from "../tools/approval-automode";
 import { type AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
 import { type AskToolInput, recoverAskQuestions } from "../tools/ask";
 import {
@@ -335,6 +343,7 @@ import {
 	buildReplanTitleContext,
 	CHECKPOINT_ACTIVE_REMINDER_TYPE,
 	type CustomMessage,
+	TOOL_APPROVAL_NOTICE_MESSAGE_TYPE,
 	type CustomMessagePayload,
 	convertToLlm,
 	dedupeEphemeralReply,
@@ -2567,6 +2576,45 @@ export class AgentSession {
 	 */
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void {
 		this.#emit({ type: "notice", level, message, source });
+	}
+
+	/** Persist a judge decision and broadcast it as a visible, transcript-only chat row. */
+	recordToolApprovalDecision(request: ToolApprovalReviewRequest, decision: ToolApprovalReviewChoice): void {
+		const obfuscator = this.#obfuscator;
+		const safeOperation = obfuscator?.hasSecrets() ? obfuscator.obfuscate(request.operation) : request.operation;
+		const toolName = truncateToWidth(replaceTabs(sanitizeText(request.toolName)), TRUNCATE_LENGTHS.CONTENT);
+		const operation = truncateToWidth(
+			shortenEmbeddedPaths(
+				replaceTabs(sanitizeText(safeOperation))
+					.replace(/[\r\n]+/g, " ")
+					.trim(),
+			),
+			TRUNCATE_LENGTHS.LONG,
+		);
+		const timestamp = Date.now();
+		const verb = decision === "allow" ? "approved" : "denied";
+		const message: CustomMessage = {
+			role: "custom",
+			customType: TOOL_APPROVAL_NOTICE_MESSAGE_TYPE,
+			content: `Automode ${verb} tool call: ${toolName}\n${operation}`,
+			display: true,
+			details: { toolCallId: request.toolCallId, tier: request.tier, decision },
+			attribution: "agent",
+			timestamp,
+		};
+
+		this.sessionManager.appendCustomMessageEntry(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+			message.attribution ?? "agent",
+			timestamp,
+		);
+		// This is an audit row, not agent context: emit to listeners without
+		// appending the message to Agent.state.messages.
+		this.#emit({ type: "message_start", message });
+		this.#emit({ type: "message_end", message });
 	}
 
 	#recordToolExecutionStart(event: Extract<AgentEvent, { type: "tool_execution_start" }>): void {

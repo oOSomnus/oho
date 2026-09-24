@@ -1,0 +1,4 @@
+auth "laya" {
+	name "Laya"
+	allows-missing-api-key #true
+}

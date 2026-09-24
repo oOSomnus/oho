@@ -532,4 +532,26 @@ describe("committed rules.json", () => {
 		expect(fresh).toEqual(committed);
 		expect(await Bun.file(AUTH_IDS_PATH).text()).toBe(renderAuthIds(fresh.auth));
 	});
+
+	test("committed Laya provider is a keyless typed judge", () => {
+		const provider = committed.providers.laya;
+		expect(provider).toMatchObject({
+			id: "laya",
+			defaultModel: "typed-decisions",
+			keyless: true,
+			seed: {
+				models: [
+					expect.objectContaining({
+						id: "typed-decisions",
+						api: "laya-local",
+						provider: "laya",
+						contextWindow: 1024,
+					}),
+				],
+			},
+		});
+		expect(committed.auth.providers).toContainEqual(
+			expect.objectContaining({ id: "laya", name: "Laya", allowsMissingApiKey: true }),
+		);
+	});
 });

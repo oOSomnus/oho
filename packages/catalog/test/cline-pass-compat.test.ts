@@ -11,7 +11,7 @@ import {
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { createReferenceResolver } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { clinePassModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
-import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
+import type { Model, ModelSpec } from "@oh-my-pi/pi-catalog/types";
 
 const CLINEPASS_MODELS_DEV_FIXTURE = {
 	"cline-pass": {
@@ -111,11 +111,18 @@ describe("ClinePass catalog", () => {
 
 	it("excludes ClinePass metadata from generic bare-id references", () => {
 		const reference = createReferenceResolver<"openai-completions">(new Map())("kimi-k3");
-		const fireworksReference = getBundledModels("fireworks").find(model => model.id === "kimi-k3");
+		const fireworksReference = getBundledModels("fireworks").find(
+			(model): model is Model<"openai-completions"> => model.id === "kimi-k3" && model.api === "openai-completions",
+		);
+		if (!fireworksReference) {
+			throw new Error("Expected a Fireworks openai-completions reference for Kimi K3");
+		}
 
 		expect(reference?.provider).toBe("fireworks");
 		expect(reference?.maxTokens).toBe(fireworksReference?.maxTokens);
-		expect(reference?.maxTokens).not.toBe(sourceModel("kimi-k3").maxTokens);
+		const referenceWireMode = resolveModelPolicy(reference!).compat.wireModelIdMode;
+		expect(referenceWireMode).toBe(fireworksReference.compat.wireModelIdMode);
+		expect(referenceWireMode).not.toBe(resolveModelPolicy(sourceModel("kimi-k3")).compat.wireModelIdMode);
 	});
 
 	it("applies the verified Cline gateway request and reasoning compatibility", () => {

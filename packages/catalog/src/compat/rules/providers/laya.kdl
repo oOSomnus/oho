@@ -1,0 +1,20 @@
+// Local Laya typed-decision model used by the automode judge.
+
+provider "laya" {
+	default-model "typed-decisions"
+	keyless #true
+
+	seed api="laya-local" base-url="local://laya" bundle="always" {
+		model "typed-decisions" name="Laya Typed Decisions (CPU)" {
+			reasoning #false
+			input "text"
+			cost input=0 output=0 cache-read=0 cache-write=0
+			limits context=1024
+			supports-tools #false
+		}
+	}
+
+	models "typed-decisions" {
+		kind "judge"
+	}
+}

@@ -1607,6 +1607,35 @@ describe("CursorExecHandlers native delete gating (issue #5680)", () => {
 		expect(result.isError).toBe(true);
 		expect(await Bun.file(target).exists()).toBe(true);
 	});
+	it("allows a native delete in automode without judge review", async () => {
+		const target = path.join(cwd, "automode-delete.txt");
+		await Bun.write(target, "remove me\n");
+		const settings = Settings.isolated({ "tools.approvalMode": "automode" });
+		let reviewCalls = 0;
+		const handlers = new CursorExecHandlers({
+			cwd,
+			tools: new Map(),
+			allowDirectFileMutation: true,
+			getToolContext: () =>
+				({
+					settings,
+					toolApprovalReviewer: {
+						review: async () => {
+							reviewCalls += 1;
+							return { decision: "allow" as const };
+						},
+					},
+				}) as unknown as AgentToolContext,
+		});
+
+		const result = await handlers.delete(
+			create(DeleteArgsSchema, { toolCallId: "call-automode-delete", path: "automode-delete.txt" }),
+		);
+
+		expect(result.isError).toBe(false);
+		expect(reviewCalls).toBe(0);
+		expect(await Bun.file(target).exists()).toBe(false);
+	});
 
 	it("refuses a native delete when execute-time context is missing", async () => {
 		const target = path.join(cwd, "unwired.txt");
@@ -1641,24 +1670,38 @@ describe("CursorExecHandlers MCP approval preflight", () => {
 		await removeWithRetries(cwd);
 	});
 
-	function mcpHandlers(settings: Settings): { handlers: CursorExecHandlers; executed: () => number } {
+	function mcpHandlers(
+		settings: Settings,
+		toolApprovalReviewer?: AgentToolContext["toolApprovalReviewer"],
+		approval: AgentTool["approval"] = "exec",
+	): { handlers: CursorExecHandlers; executed: () => number; approvedContextIds: () => string[] } {
 		let executed = 0;
+		const approvedContextIds: string[] = [];
 		const tool: AgentTool = {
 			name: "mcp__ops__deploy",
 			label: "deploy",
 			description: "",
 			parameters: type({}),
-			execute: async () => {
+			approval,
+			execute: async (
+				_toolCallId: string,
+				_args: unknown,
+				_signal: AbortSignal | undefined,
+				_onUpdate: unknown,
+				context?: AgentToolContext,
+			) => {
 				executed += 1;
+				if (context?.automodeApprovedToolCallId) approvedContextIds.push(context.automodeApprovedToolCallId);
 				return { content: [{ type: "text", text: "ran" }] };
 			},
 		} as unknown as AgentTool;
 		const handlers = new CursorExecHandlers({
 			cwd,
 			tools: new Map([[tool.name, tool]]),
-			getToolContext: () => ({ settings }) as AgentToolContext,
+			getToolContext: () =>
+				({ settings, ...(toolApprovalReviewer ? { toolApprovalReviewer } : {}) }) as AgentToolContext,
 		});
-		return { handlers, executed: () => executed };
+		return { handlers, executed: () => executed, approvedContextIds: () => approvedContextIds };
 	}
 
 	const call = {
@@ -1694,6 +1737,111 @@ describe("CursorExecHandlers MCP approval preflight", () => {
 		// The user is asked for real when the call arrives; answering yes on
 		// their behalf pre-authorizes something they never saw.
 		expect(await handlers.mcpApprovalPreflight(call)).toBe(false);
+	});
+
+	it("approves a write-tier preflight in automode without judge review", async () => {
+		let reviewCalls = 0;
+		const reviewer = {
+			review: async () => {
+				reviewCalls += 1;
+				return { decision: "allow" as const };
+			},
+		};
+		const { handlers } = mcpHandlers(Settings.isolated({ "tools.approvalMode": "automode" }), reviewer, "write");
+
+		expect(await handlers.mcpApprovalPreflight(call)).toBe(true);
+		expect(reviewCalls).toBe(0);
+	});
+	it("uses automode preflight approval once for the exact MCP call", async () => {
+		let reviewCalls = 0;
+		const reviewer = {
+			review: async () => {
+				reviewCalls += 1;
+				return { decision: "allow" as const };
+			},
+		};
+		const { handlers, executed, approvedContextIds } = mcpHandlers(
+			Settings.isolated({ "tools.approvalMode": "automode" }),
+			reviewer,
+		);
+
+		expect(await handlers.mcpApprovalPreflight(call)).toBe(true);
+		await handlers.mcp(call);
+		await handlers.mcp(call);
+
+		expect(reviewCalls).toBe(1);
+		expect(executed()).toBe(2);
+		expect(approvedContextIds()).toEqual(["c1"]);
+	});
+
+	it("does not reuse a nested MCP grant after its arguments change", async () => {
+		let executed = 0;
+		const approvedContextIds: string[] = [];
+		let reviewCalls = 0;
+		const runnerReviewCalls: string[] = [];
+		const reviewer = {
+			review: async () => {
+				reviewCalls += 1;
+				return { decision: "allow" as const };
+			},
+		};
+		const tool: AgentTool = {
+			name: "mcp__ops__nested",
+			label: "nested",
+			description: "",
+			parameters: type({ payload: type({ path: type("string") }) }),
+			approval: "exec",
+			execute: async (
+				_toolCallId: string,
+				_args: unknown,
+				_signal: AbortSignal | undefined,
+				_onUpdate: unknown,
+				context?: AgentToolContext,
+			) => {
+				executed += 1;
+				if (context?.automodeApprovedToolCallId) approvedContextIds.push(context.automodeApprovedToolCallId);
+				return { content: [{ type: "text", text: "ran" }] };
+			},
+		} as unknown as AgentTool;
+		const runner = {
+			...passthroughRunner(),
+			hasHandlers: () => false,
+			reviewToolApproval: async (
+				request: Parameters<ExtensionRunner["reviewToolApproval"]>[0],
+				_signal?: AbortSignal,
+			) => {
+				runnerReviewCalls.push(request.toolCallId);
+				return reviewer.review();
+			},
+		} as unknown as ExtensionRunner;
+		const wrapped = new ExtensionToolWrapper(tool, runner);
+		const settings = Settings.isolated({ "tools.approvalMode": "automode" });
+		const handlers = new CursorExecHandlers({
+			cwd,
+			tools: new Map([[tool.name, tool]]),
+			getExecutableTool: name => (name === tool.name ? (wrapped as unknown as AgentTool) : undefined),
+			getToolContext: () => ({ settings, toolApprovalReviewer: reviewer }) as unknown as AgentToolContext,
+		});
+		const nestedCall = {
+			name: tool.name,
+			toolName: tool.name,
+			toolCallId: "nested-call",
+			providerIdentifier: "ops",
+			args: { payload: { path: "before" } },
+			rawArgs: {},
+		};
+
+		expect(await handlers.mcpApprovalPreflight(nestedCall)).toBe(true);
+		nestedCall.args.payload.path = "after";
+		const result = await handlers.mcp(nestedCall);
+		expect(result.content).toEqual([{ type: "text", text: "ran" }]);
+
+		expect({ reviewCalls, runnerReviewCalls, approvedContextIds, executed }).toEqual({
+			reviewCalls: 2,
+			runnerReviewCalls: ["nested-call"],
+			approvedContextIds: [],
+			executed: 1,
+		});
 	});
 
 	it("refuses a tool the session does not have", async () => {

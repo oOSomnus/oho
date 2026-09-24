@@ -16,6 +16,7 @@ import {
 	markPerCallContextMessage,
 	setContextHistoryIndex,
 } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import type { KeyId } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../../config/model-registry";
@@ -25,6 +26,13 @@ import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
 import type { SessionManager } from "../../session/session-manager";
+import {
+	ToolApprovalAutomodeReviewer,
+	type ToolApprovalReview,
+	type ToolApprovalReviewChoice,
+	type ToolApprovalReviewRequest,
+	type ToolApprovalReviewer,
+} from "../../tools/approval-automode";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { ManagedTimers } from "./managed-timers";
@@ -435,6 +443,41 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+interface ToolApprovalRunnerOptions {
+	toolApprovalReviewer?: ToolApprovalReviewer;
+	onToolApprovalResolved?: (request: ToolApprovalReviewRequest, decision: ToolApprovalReviewChoice) => void;
+	obfuscateForApprovalReview?: (text: string) => string;
+}
+const APPROVAL_CONTEXT_MESSAGE_LIMIT = 8;
+function approvalConversationContext(sessionManager: SessionManager): {
+	latestUserText: string | undefined;
+	recentMessages: string | undefined;
+} {
+	const branch = sessionManager.getBranch();
+	const messages: string[] = [];
+	let latestUserText: string | undefined;
+	for (let index = branch.length - 1; index >= 0; index -= 1) {
+		const entry = branch[index];
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role !== "user" && message.role !== "assistant") continue;
+		if (
+			message.role === "user" &&
+			(("synthetic" in message && message.synthetic === true) ||
+				("attribution" in message && message.attribution === "agent"))
+		) {
+			continue;
+		}
+		const text = textContent(message.content).trim();
+		if (text.length === 0) continue;
+		if (message.role === "user" && latestUserText === undefined) latestUserText = text;
+		if (messages.length < APPROVAL_CONTEXT_MESSAGE_LIMIT) messages.push(`${message.role}: ${text}`);
+		if (messages.length >= APPROVAL_CONTEXT_MESSAGE_LIMIT && latestUserText !== undefined) break;
+	}
+	messages.reverse();
+	return { latestUserText, recentMessages: messages.length > 0 ? messages.join("\n") : undefined };
+}
+
 interface ToolRegistrationScope {
 	pending: Set<Promise<void>>;
 	signal?: AbortSignal;
@@ -448,6 +491,9 @@ export class ExtensionRunner {
 	#errorListeners: Set<ExtensionErrorListener> = new Set();
 	#getModel: () => Model | undefined = () => undefined;
 	#isIdleFn: () => boolean = () => true;
+	#toolApprovalReviewer?: ToolApprovalReviewer;
+	#obfuscateForApprovalReview?: (text: string) => string;
+	#onToolApprovalResolved?: ToolApprovalRunnerOptions["onToolApprovalResolved"];
 	#waitForIdleFn: () => Promise<void> = async () => {};
 	#abortFn: () => void = () => {};
 	#hasPendingMessagesFn: () => boolean = () => false;
@@ -617,10 +663,14 @@ export class ExtensionRunner {
 		private readonly settings?: Settings,
 		private readonly localProtocolOptions?: LocalProtocolOptions,
 		getAsyncJobSnapshot?: () => AsyncJobSnapshot | null,
+		approvalOptions?: ToolApprovalRunnerOptions,
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
 		this.#getAsyncJobSnapshotFn = getAsyncJobSnapshot ?? (() => null);
+		this.#toolApprovalReviewer = approvalOptions?.toolApprovalReviewer;
+		this.#onToolApprovalResolved = approvalOptions?.onToolApprovalResolved;
+		this.#obfuscateForApprovalReview = approvalOptions?.obfuscateForApprovalReview;
 	}
 
 	/**
@@ -660,6 +710,35 @@ export class ExtensionRunner {
 	 */
 	get sessionSettings(): Settings | undefined {
 		return this.settings;
+	}
+	/** Review one frozen operation through the session's automode reviewer seam. */
+	async reviewToolApproval(request: ToolApprovalReviewRequest, signal?: AbortSignal): Promise<ToolApprovalReview> {
+		if (!this.#toolApprovalReviewer) {
+			if (!this.settings) return { decision: "unavailable", reason: "session settings unavailable" };
+			this.#toolApprovalReviewer = new ToolApprovalAutomodeReviewer({
+				settings: this.settings,
+				registry: this.modelRegistry,
+				sessionManager: this.sessionManager,
+				sessionId: this.sessionId,
+				getSessionId: () => this.sessionId,
+				getModel: this.#getModel,
+				getCwd: () => this.cwd,
+				getConversationContext: () => approvalConversationContext(this.sessionManager),
+				obfuscateText: this.#obfuscateForApprovalReview,
+			});
+		}
+		const review = await this.#toolApprovalReviewer.review(request, signal);
+		if (review.decision === "allow" || review.decision === "deny") {
+			try {
+				this.#onToolApprovalResolved?.(request, review.decision);
+			} catch (error) {
+				logger.warn("Automode tool approval decision notification failed", {
+					toolName: request.toolName,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		return review;
 	}
 
 	initialize(

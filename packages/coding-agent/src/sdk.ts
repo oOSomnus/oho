@@ -243,6 +243,7 @@ import { createBrowserPrelude } from "./tools/browser";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
 import { createComputerPrelude } from "./tools/computer";
 import { ToolContextStore } from "./tools/context";
+import type { ToolApprovalReviewer } from "./tools/approval-automode";
 import { isIrcEnabled } from "./irc/messaging";
 import { getImageGenTools } from "./tools/image-gen";
 import { wrapToolWithMetaNotice } from "./tools/output-meta";
@@ -2923,6 +2924,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			settings,
 			localProtocolOptions,
 			() => (hasSession ? session.getAsyncJobSnapshot() : null),
+			{
+				obfuscateForApprovalReview: obfuscator?.hasSecrets() ? text => obfuscator.obfuscate(text) : undefined,
+				onToolApprovalResolved: (request, decision) => {
+					if (hasSession) session.recordToolApprovalDecision(request, decision);
+				},
+			},
 		);
 
 		credentialDisabledTarget = extensionRunner;
@@ -2931,6 +2938,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			void extensionRunner.emitCredentialDisabled(event);
 		}
 
+		const toolApprovalReviewer: ToolApprovalReviewer = {
+			review: (request, signal) => extensionRunner.reviewToolApproval(request, signal),
+		};
 		const getSessionContext = () => ({
 			sessionManager,
 			modelRegistry,
@@ -2943,6 +2953,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			settings,
 			localProtocolOptions,
 			autoApprove: options.autoApprove ?? false,
+			toolApprovalReviewer,
 		});
 		const toolContextStore = new ToolContextStore(getSessionContext);
 		toolSession.getToolContext = () => toolContextStore.getContext();

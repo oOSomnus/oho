@@ -81,6 +81,8 @@ export type SubmittedUserInput = {
 
 export interface InteractiveModeInitOptions {
 	suppressWelcomeIntro?: boolean;
+	/** Whether to warm the configured local Laya judge; defaults to true. */
+	prewarmLayaJudge?: boolean;
 	clearInitialTerminalHistory?: boolean;
 	/** Opt into hosting when the caller owns outer startup readiness and shutdown. */
 	autoStartCollab?: boolean;

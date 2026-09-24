@@ -78,6 +78,7 @@ The tiny-model CLI and source registry retain **title** and **memory** groupings
   second omp instance attaches to a running worker in well under a second; titles 15–60ms after
   warmup; Qwen3-1.7B (blocked on onnxruntime-node) downloads 984MB and answers a memory
   extraction in ~200ms.
+
 - **Quantization: q4 is the sweet spot** — smaller on disk, faster to load, and fast at inference.
   q8/int8 loads slower _and_ infers slower on CPU. Every shipped model defaults to `q4`; override the
   precision persistently with the `providers.tinyModelDtype` setting (`default` keeps `q4`, e.g. `fp16`
@@ -99,6 +100,28 @@ The tiny-model CLI and source registry retain **title** and **memory** groupings
 - **First run** downloads weights from the HF Hub to a cache dir (q4 weights ~150MB–1.1GB depending
   on model); subsequent **warm** loads are sub-second to ~3s. Inference is async and
   background-friendly for memory tasks; titles are semi-interactive.
+
+### Laya typed decisions
+
+The `laya/typed-decisions` judge is a separate CPU-only local backend for
+automode and other typed judgments. It uses the
+`convaiinnovations/laya/typed-decisions` checkpoint through `laya==0.3.6`; it
+does not use the tiny ONNX/MLX runtime or require a provider API key.
+
+- The private Python environment is installed at
+  `~/.omp/agent/cache/laya-runtime/laya-0.3.6/`.
+- The Hugging Face model cache is under `~/.omp/agent/cache/tiny-models/laya/`.
+- The detached JSONL worker owns
+  `~/.omp/run/laya/typed-decisions.sock` (or a Windows named pipe) and its
+  sibling log file.
+- `uv` is preferred; the fallback is `python3 -m venv` with Python 3.10–3.13.
+- `OMP_LAYA_WORKER_IDLE_MS` overrides the default 15-minute idle shutdown.
+
+The interactive mode prewarms the worker when the effective `judge` role is
+Laya. Runtime installation and model download remain lazy, so merely listing
+models or using another judge does not download Python packages or weights.
+When the worker cannot start, load, or validate a CPU handshake, the judge
+chain records the failure and tries its next candidate.
 
 ## Task 1: Session title generation (`modelRoles.tiny`)
 

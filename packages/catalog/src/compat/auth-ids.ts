@@ -39,6 +39,7 @@ export type AuthProviderId =
 	| "kagi"
 	| "kilo"
 	| "kimi-code"
+	| "laya"
 	| "litellm"
 	| "llama.cpp"
 	| "lm-studio"

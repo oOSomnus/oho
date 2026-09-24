@@ -5,6 +5,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ChainJudge, journalJudgmentUsage } from "@oh-my-pi/pi-coding-agent/judgment";
+import { layaJudgeClient } from "@oh-my-pi/pi-coding-agent/judgment/laya-client";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { tinyModelClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
@@ -27,8 +28,18 @@ const JEV_PREVIEW = {
 const LOCAL = getBundledModel("local", "qwen2.5-1.5b");
 const ONLINE = getBundledModel("anthropic", "claude-sonnet-4-6");
 if (!LOCAL || !ONLINE) throw new Error("Expected bundled local and online judge models");
+const LAYA = getBundledModel("laya", "typed-decisions");
 
+if (!LAYA) throw new Error("Expected bundled Laya judge model");
 const ONLINE_BACKUP = { ...ONLINE, id: "claude-sonnet-judge-backup", name: "Judge Backup" } as Model<Api>;
+const GPT_PRIMARY = {
+	...ONLINE,
+	id: "gpt-test",
+	name: "GPT Test",
+	provider: "openai",
+	api: "openai-responses",
+	baseUrl: "https://api.openai.com/v1",
+} as Model<Api>;
 
 const DECISIONS = {
 	...JEV_PREVIEW,
@@ -162,6 +173,79 @@ describe("ChainJudge", () => {
 		expect(onUsage).toHaveBeenCalledWith(
 			expect.objectContaining({ role: "typesafe", provider: "typesafe", model: "jev-preview" }),
 		);
+	});
+
+	it("uses keyless Laya judgments and records zero-cost usage", async () => {
+		const settings = Settings.isolated({ modelRoles: { judge: "laya/typed-decisions" } });
+		const registry = makeRegistry([LAYA]);
+		const laya = vi.spyOn(layaJudgeClient, "judge").mockResolvedValue({
+			model: "typed-decisions",
+			answers: {
+				level: { type: "choice", choice: "high", probabilities: { low: 0.1, high: 0.9 }, confidence: 0.9 },
+			},
+			usage: { input_tokens: 4, output_tokens: 1 },
+		});
+		const onUsage = vi.fn();
+
+		const result = await new ChainJudge({ settings, registry, onUsage }).judge({
+			state: "prefer a safe change",
+			questions: { level: TIER_QUESTION },
+		});
+
+		expect(laya).toHaveBeenCalledTimes(1);
+		expect(result).toMatchObject({
+			api: "laya-local",
+			provider: "laya",
+			model: "typed-decisions",
+			answers: { level: { choice: "high" } },
+			usage: { input: 4, output: 0, totalTokens: 4 },
+		});
+		expect(onUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ role: "judge", api: "laya-local", provider: "laya", model: "typed-decisions" }),
+		);
+	});
+	it("reaches a configured Laya fallback only after the GPT primary fails on demand", async () => {
+		const settings = Settings.isolated({
+			modelRoles: { judge: `${GPT_PRIMARY.provider}/${GPT_PRIMARY.id}` },
+			"retry.fallbackChains": { judge: [`${LAYA.provider}/${LAYA.id}`] },
+		});
+		const registry = makeRegistry([GPT_PRIMARY, LAYA], { openai: "openai-key" });
+		const attempts: string[] = [];
+		const completeSimple = vi.spyOn(ai, "completeSimple").mockImplementation(async model => {
+			attempts.push(`${model.provider}/${model.id}`);
+			throw new Error("GPT judgment failed");
+		});
+		const prewarm = vi.spyOn(layaJudgeClient, "prewarm").mockImplementation(() => {});
+		const laya = vi.spyOn(layaJudgeClient, "judge").mockImplementation(async () => {
+			attempts.push("laya");
+			return {
+				model: "typed-decisions",
+				answers: {
+					level: {
+						type: "choice",
+						choice: "high",
+						probabilities: { low: 0.1, high: 0.9 },
+						confidence: 0.9,
+					},
+				},
+				usage: { input_tokens: 4, output_tokens: 1 },
+			};
+		});
+		const judge = new ChainJudge({ settings, registry });
+
+		expect(completeSimple).not.toHaveBeenCalled();
+		expect(laya).not.toHaveBeenCalled();
+		expect(prewarm).not.toHaveBeenCalled();
+		const result = await judge.judge({
+			state: "prefer a safe change",
+			questions: { level: TIER_QUESTION },
+		});
+
+		expect(result.api).toBe("laya-local");
+		expect(result.answers.level.choice).toBe("high");
+		expect(attempts).toEqual([`${GPT_PRIMARY.provider}/${GPT_PRIMARY.id}`, "laya"]);
+		expect(laya).toHaveBeenCalledTimes(1);
+		expect(prewarm).not.toHaveBeenCalled();
 	});
 
 	it("journals judgment usage on the active branch and stops once the session changes", async () => {

@@ -2,6 +2,7 @@
 
 provider "local" {
 	default-model "lfm2.5-230m"
+	keyless #true
 	allow-unauthenticated #true
 
 	seed api="local-inference" base-url="local://inference" bundle="always" {

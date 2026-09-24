@@ -27,10 +27,10 @@ import {
 	piReadPath,
 	piTimeout,
 } from "@oh-my-pi/pi-ai/providers/cursor-pi-args";
-import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { cursorMcpPrefersReplaceEdit, normalizeCursorReplaceArgs } from "./cursor-bridge-tools";
 import type { MCPResourceReadResult } from "./mcp/types";
-import { resolveApproval, resolveApprovalFromContext } from "./tools/approval";
+import { formatApprovalPrompt, resolveApproval, resolveApprovalFromContext } from "./tools/approval";
 import { confineToWorkspace, resolveToCwd } from "./tools/path-utils";
 import type { TodoPhase, TodoStatus } from "@oh-my-pi/pi-tui/tools/todo";
 
@@ -233,6 +233,7 @@ async function executeTool(
 	toolCallId: string,
 	args: Record<string, unknown>,
 	overrideTool?: CursorBridgeTool,
+	overrideContext?: AgentToolContext,
 ): Promise<ToolResultMessage> {
 	const tool = overrideTool ?? options.getExecutableTool?.(toolName) ?? options.tools.get(toolName);
 	if (!tool) {
@@ -271,7 +272,7 @@ async function executeTool(
 			toolArgs as Record<string, unknown>,
 			undefined,
 			onUpdate,
-			options.getToolContext?.(),
+			overrideContext ?? options.getToolContext?.(),
 		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -302,15 +303,33 @@ function allowsDirectFileMutation(options: CursorExecBridgeOptions): boolean {
  * a file creation or removal belongs to. Returns `null` when the call may
  * proceed, or the refusal text to answer with.
  */
-function refuseByWritePolicy(options: CursorExecBridgeOptions, toolName: string, pathArg: string): string | null {
-	const { approvalMode, userPolicies } = resolveApprovalFromContext(options.getToolContext?.());
-	const approval = resolveApproval(
-		{ name: toolName, approval: "write" },
-		{ path: pathArg },
-		approvalMode,
-		userPolicies,
-	);
+async function refuseByWritePolicy(
+	options: CursorExecBridgeOptions,
+	toolName: string,
+	pathArg: string,
+	toolCallId: string,
+): Promise<string | null> {
+	const context = options.getToolContext?.();
+	const { approvalMode, userPolicies } = resolveApprovalFromContext(context);
+	const subject = { name: toolName, approval: "write" as const };
+	const approval = resolveApproval(subject, { path: pathArg }, approvalMode, userPolicies);
 	if (approval.policy === "allow") return null;
+	if (
+		approval.policy === "prompt" &&
+		approval.tier === "exec" &&
+		approvalMode === "automode" &&
+		approval.source === "mode" &&
+		context?.toolApprovalReviewer
+	) {
+		const review = await context.toolApprovalReviewer.review({
+			toolCallId,
+			toolName,
+			tier: approval.tier,
+			operation: formatApprovalPrompt(subject, { path: pathArg }, approval.reason),
+		});
+		if (review.decision === "allow") return null;
+		if (review.decision === "deny") return `Tool "${toolName}" denied by automode.`;
+	}
 	return approval.policy === "deny"
 		? `Tool "${toolName}" is blocked by user policy.`
 		: `Tool "${toolName}" requires approval, which this channel cannot request.`;
@@ -329,7 +348,7 @@ async function executeDelete(options: CursorExecBridgeOptions, pathArg: string, 
 	// `allowDirectFileMutation` answers "was a mutating tool granted", which is a
 	// different question from "does the user's policy allow this call" — without
 	// this, a configured `deny` or an `always-ask` session still lost the file.
-	const refusal = refuseByWritePolicy(options, toolName, pathArg);
+	const refusal = await refuseByWritePolicy(options, toolName, pathArg, toolCallId);
 	if (refusal) {
 		return createToolResultMessage(toolCallId, toolName, buildToolErrorResult(refusal), true);
 	}
@@ -413,6 +432,13 @@ function formatTodoSyncSummary(phases: TodoPhase[]): string {
  * whole list — and `event-controller` feeds `details.phases` straight into
  * `setTodos`, so a refused `read_todos` would overwrite live UI state.
  */
+interface CursorAutomodeApprovalGrant {
+	toolName: string;
+	args: Record<string, unknown>;
+}
+
+const MAX_CURSOR_AUTOMODE_APPROVAL_GRANTS = 64;
+
 function buildTodoSyncResult(
 	toolCallId: string,
 	phases: TodoPhase[] | undefined,
@@ -433,6 +459,37 @@ function buildTodoSyncResult(
 
 export class CursorExecHandlers implements ICursorExecHandlers {
 	constructor(private options: CursorExecBridgeOptions) {}
+	#automodeApprovalGrants = new Map<string, CursorAutomodeApprovalGrant>();
+
+	#rememberAutomodeApproval(toolCallId: string, grant: CursorAutomodeApprovalGrant): void {
+		const args = structuredCloneJSON(grant.args);
+		if (this.#automodeApprovalGrants.size >= MAX_CURSOR_AUTOMODE_APPROVAL_GRANTS) {
+			const oldest = this.#automodeApprovalGrants.keys().next().value;
+			if (typeof oldest === "string") this.#automodeApprovalGrants.delete(oldest);
+		}
+		this.#automodeApprovalGrants.set(toolCallId, {
+			toolName: grant.toolName,
+			args,
+		});
+	}
+
+	#consumeAutomodeApproval(
+		toolCallId: string,
+		toolName: string,
+		args: Record<string, unknown>,
+	): AgentToolContext | undefined {
+		const grant = this.#automodeApprovalGrants.get(toolCallId);
+		if (!grant) return undefined;
+		this.#automodeApprovalGrants.delete(toolCallId);
+		if (grant.toolName !== toolName || !Bun.deepEquals(grant.args, args)) return undefined;
+		const context = this.options.getToolContext?.();
+		if (!context) return undefined;
+		return {
+			...context,
+			automodeApprovedToolCallId: toolCallId,
+			automodeApprovedArgs: structuredCloneJSON(grant.args),
+		};
+	}
 
 	/**
 	 * Modern Cursor builds paginate the legacy `read` frame with
@@ -788,7 +845,7 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 			if (!allowsDirectFileMutation(this.options)) {
 				throw new Error('Tool "write" not available: this session cannot download resources to disk.');
 			}
-			const refusal = refuseByWritePolicy(this.options, "write", downloadPath);
+			const refusal = await refuseByWritePolicy(this.options, "write", downloadPath, randomUUID());
 			if (refusal) throw new Error(refusal);
 		}
 		const mcp = this.options.mcpResources;
@@ -936,14 +993,26 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 		const toolName = call.toolName || call.name;
 		const toolCallId = decodeToolCallId(call.toolCallId);
 		const args = Object.keys(call.args ?? {}).length > 0 ? call.args : decodeMcpArgs(call.rawArgs ?? {});
-		if (cursorMcpPrefersReplaceEdit(toolName, args)) {
+		const preferReplace = cursorMcpPrefersReplaceEdit(toolName, args);
+		const executionToolName = preferReplace ? "edit" : toolName;
+		const executionArgs = preferReplace ? normalizeCursorReplaceArgs(args) : args;
+		const executionArgsWithoutUndefined = omitUndefinedArgs(executionArgs);
+		if (preferReplace) {
 			const replaceTool = this.options.getEditReplaceTool?.();
 			if (!replaceTool) {
 				const availableTools = Array.from(this.options.tools.keys()).filter(name => name.startsWith("mcp__"));
 				const message = formatMcpToolErrorMessage(toolName, availableTools);
 				return createToolResultMessage(toolCallId, toolName, buildToolErrorResult(message), true);
 			}
-			return await executeTool(this.options, "edit", toolCallId, normalizeCursorReplaceArgs(args), replaceTool);
+			const context = this.#consumeAutomodeApproval(toolCallId, executionToolName, executionArgsWithoutUndefined);
+			return await executeTool(
+				this.options,
+				executionToolName,
+				toolCallId,
+				executionArgsWithoutUndefined,
+				replaceTool,
+				context,
+			);
 		}
 		const tool = this.options.getExecutableTool?.(toolName) ?? this.options.tools.get(toolName);
 		if (!tool) {
@@ -953,33 +1022,63 @@ export class CursorExecHandlers implements ICursorExecHandlers {
 			return createToolResultMessage(toolCallId, toolName, result, true);
 		}
 
-		const toolResultMessage = await executeTool(this.options, toolName, toolCallId, args);
-		return toolResultMessage;
+		const context = this.#consumeAutomodeApproval(toolCallId, executionToolName, executionArgsWithoutUndefined);
+		return await executeTool(this.options, toolName, toolCallId, executionArgsWithoutUndefined, undefined, context);
 	}
 
 	/**
 	 * Resolve an MCP call's approval without running it.
 	 *
 	 * Same resolution the wrapper applies at execution time, minus the
-	 * execution: an unknown tool is not approvable, and a `prompt` is not an
-	 * approval — the frame has no way to carry an interactive question, and the
-	 * user is asked for real when the call itself arrives.
+	 * execution: an unknown tool is not approvable, and ordinary `prompt`
+	 * decisions are not approvals because this frame has no interactive
+	 * question channel. In `automode`, its reviewer may issue a one-shot
+	 * exact-arguments grant for the later execution frame.
 	 */
 	async mcpApprovalPreflight(call: CursorMcpCall) {
 		const toolName = call.toolName || call.name;
 		const args = Object.keys(call.args ?? {}).length > 0 ? call.args : decodeMcpArgs(call.rawArgs ?? {});
 		const preferReplace = cursorMcpPrefersReplaceEdit(toolName, args);
+		const executionToolName = preferReplace ? "edit" : toolName;
+		const executionArgs = preferReplace ? normalizeCursorReplaceArgs(args) : args;
+		const executionArgsWithoutUndefined = omitUndefinedArgs(executionArgs);
 		const tool = preferReplace
 			? this.options.getEditReplaceTool?.()
 			: (this.options.getExecutableTool?.(toolName) ?? this.options.tools.get(toolName));
 		if (!tool) return false;
-		const { approvalMode, userPolicies } = resolveApprovalFromContext(this.options.getToolContext?.());
-		const approval = resolveApproval(
-			tool,
-			preferReplace ? normalizeCursorReplaceArgs(args) : args,
-			approvalMode,
-			userPolicies,
-		);
-		return approval.policy === "allow";
+		const context = this.options.getToolContext?.();
+		const { approvalMode, userPolicies } = resolveApprovalFromContext(context);
+		const approval = resolveApproval(tool, executionArgs, approvalMode, userPolicies);
+		if (approval.policy === "allow") return true;
+		if (
+			approval.policy !== "prompt" ||
+			approval.tier !== "exec" ||
+			approvalMode !== "automode" ||
+			approval.source !== "mode" ||
+			!context?.toolApprovalReviewer ||
+			typeof call.toolCallId !== "string" ||
+			call.toolCallId.length === 0
+		) {
+			return false;
+		}
+		let approvedArgs: Record<string, unknown>;
+		try {
+			approvedArgs = structuredCloneJSON(executionArgsWithoutUndefined);
+		} catch {
+			return false;
+		}
+		const toolCallId = decodeToolCallId(call.toolCallId);
+		const review = await context.toolApprovalReviewer.review({
+			toolCallId,
+			toolName: executionToolName,
+			tier: approval.tier,
+			operation: formatApprovalPrompt(tool, executionArgs, approval.reason),
+		});
+		if (review.decision !== "allow") return false;
+		this.#rememberAutomodeApproval(toolCallId, {
+			toolName: executionToolName,
+			args: approvedArgs,
+		});
+		return true;
 	}
 }
