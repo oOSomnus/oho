@@ -69,6 +69,7 @@ function passthroughRunner(seen: string[] = []): ExtensionRunner {
 	return {
 		hasHandlers: () => true,
 		consumeToolCallEmitted: () => false,
+		fireFastGate: () => {},
 		runScoped<T>(fn: () => T): T {
 			return fn();
 		},

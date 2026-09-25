@@ -17,6 +17,7 @@ import type { ToolTier } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "../../src/config/settings";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import {
+	formatApprovalActorSuffix,
 	ToolApprovalAutomodeReviewer,
 	type ToolApprovalAutomodeDependencies,
 	type ToolApprovalReviewChoice,
@@ -117,6 +118,7 @@ describe("ToolApprovalAutomodeReviewer", () => {
 		expect(await fixture.reviewer.review(request("exec"))).toEqual({
 			decision: "allow",
 			model: "test/judge",
+			actor: "judge",
 		});
 		const questions = fixture.questions[0] as { decision: { criteria: Record<string, unknown> } };
 		expect(Object.keys(questions.decision.criteria)).toEqual(["allow", "deny"]);
@@ -143,6 +145,7 @@ describe("ToolApprovalAutomodeReviewer", () => {
 			expect(await fixture.reviewer.review(request())).toEqual({
 				decision,
 				model: "approval-review",
+				actor: "judge",
 			});
 			expect(observedPrompt?.system).toContain("allow");
 			expect(observedPrompt?.system).toContain("deny");
@@ -160,6 +163,7 @@ describe("ToolApprovalAutomodeReviewer", () => {
 		expect(await fixture.reviewer.review(request())).toEqual({
 			decision: "deny",
 			model: "test/judge",
+			actor: "judge",
 		});
 	});
 
@@ -259,5 +263,40 @@ describe("ToolApprovalAutomodeReviewer", () => {
 		load.resolve();
 
 		await expect(result).resolves.toMatchObject({ decision: "allow", model: "typed-decisions" });
+	});
+});
+
+describe("formatApprovalActorSuffix", () => {
+	it("returns empty when no actor was recorded", () => {
+		expect(formatApprovalActorSuffix(undefined)).toBe("");
+		expect(formatApprovalActorSuffix({})).toBe("");
+		expect(formatApprovalActorSuffix({ handoff: "risk-threshold" })).toBe("");
+	});
+
+	it("names the actor alone when no classification is attached", () => {
+		expect(formatApprovalActorSuffix({ actor: "judge" })).toBe(" (judge)");
+		expect(formatApprovalActorSuffix({ actor: "fast-gate" })).toBe(" (fast gate)");
+		expect(formatApprovalActorSuffix({ actor: "user" })).toBe(" (user)");
+	});
+
+	it("appends the dual-axis summary when classification is attached", () => {
+		expect(
+			formatApprovalActorSuffix({
+				actor: "fast-gate",
+				classification: { risk: "low", authorization: "high" },
+			}),
+		).toBe(" (fast gate: risk=low auth=high)");
+	});
+
+	it("drops the scores but keeps the actor when score display is off", () => {
+		const meta = {
+			actor: "fast-gate" as const,
+			classification: { risk: "critical" as const, authorization: "unknown" as const },
+		};
+
+		expect(formatApprovalActorSuffix(meta, { showScores: false })).toBe(" (fast gate)");
+		// Explicitly on, and omitted, both default to showing them.
+		expect(formatApprovalActorSuffix(meta, { showScores: true })).toBe(" (fast gate: risk=critical auth=unknown)");
+		expect(formatApprovalActorSuffix(meta)).toBe(" (fast gate: risk=critical auth=unknown)");
 	});
 });
