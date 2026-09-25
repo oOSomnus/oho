@@ -88,9 +88,12 @@ export class LayaJudgeClient {
 		this.#notifyLoadState(listener, this.#loadState);
 		return () => this.#loadStateListeners.delete(listener);
 	}
+	waitUntilReady(signal?: AbortSignal): Promise<void> {
+		return this.#load(signal);
+	}
 
 	prewarm(): void {
-		void this.#load().catch(error => {
+		void this.waitUntilReady().catch(error => {
 			logger.debug("laya: prewarm failed", { error: workerError(error).message });
 		});
 	}

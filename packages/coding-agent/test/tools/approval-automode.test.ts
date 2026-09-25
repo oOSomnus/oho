@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import {
 	type ChoiceAnswer,
 	type Judge,
@@ -10,15 +10,27 @@ import {
 	type TextPrompt,
 	TextJudge,
 } from "@oh-my-pi/pi-ai";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ChainJudge } from "../../src/judgment";
+import { layaJudgeClient } from "../../src/judgment/laya-client";
 import type { ToolTier } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "../../src/config/settings";
 import type { ModelRegistry } from "../../src/config/model-registry";
 import {
 	ToolApprovalAutomodeReviewer,
+	type ToolApprovalAutomodeDependencies,
 	type ToolApprovalReviewChoice,
 	type ToolApprovalReviewRequest,
 } from "../../src/tools/approval-automode";
 import { tokenUsage } from "@oh-my-pi/pi-ai/judgment";
+
+const LAYA = getBundledModel("laya", "typed-decisions");
+if (!LAYA) throw new Error("Expected bundled Laya judge model");
+
+afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+});
 
 type ReviewFixture = {
 	reviewer: ToolApprovalAutomodeReviewer;
@@ -36,6 +48,8 @@ function makeFixture(
 		cwd?: string;
 		obfuscateText?: (text: string) => string;
 		judge?: Judge;
+		settings?: Settings;
+		registry?: ModelRegistry;
 	} = {},
 ): ReviewFixture {
 	const states: unknown[] = [];
@@ -69,21 +83,23 @@ function makeFixture(
 			},
 		} satisfies Judge);
 
+	const dependencies = {
+		settings: overrides.settings ?? Settings.isolated(),
+		registry: overrides.registry ?? ({} as ModelRegistry),
+		getModel: () => undefined,
+		getCwd: () => overrides.cwd ?? "/workspace/project",
+		getConversationContext: () => ({
+			latestUserText: overrides.latestUserText ?? "Please update the project safely.",
+			recentMessages: overrides.recentMessages,
+		}),
+		obfuscateText: overrides.obfuscateText,
+		createJudge: () => judge,
+	} as ToolApprovalAutomodeDependencies;
+
 	return {
 		states,
 		questions,
-		reviewer: new ToolApprovalAutomodeReviewer({
-			settings: Settings.isolated(),
-			registry: {} as ModelRegistry,
-			getModel: () => undefined,
-			getCwd: () => overrides.cwd ?? "/workspace/project",
-			getConversationContext: () => ({
-				latestUserText: overrides.latestUserText ?? "Please update the project safely.",
-				recentMessages: overrides.recentMessages,
-			}),
-			obfuscateText: overrides.obfuscateText,
-			createJudge: () => judge,
-		}),
+		reviewer: new ToolApprovalAutomodeReviewer(dependencies),
 	};
 }
 
@@ -192,5 +208,56 @@ describe("ToolApprovalAutomodeReviewer", () => {
 		controller.abort(new Error("cancelled"));
 
 		await expect(fixture.reviewer.review(request(), controller.signal)).rejects.toThrow("cancelled");
+	});
+
+	it("does not charge a cold Laya load against the review deadline", async () => {
+		const load = Promise.withResolvers<void>();
+		const stage = Promise.withResolvers<"load" | "judge">();
+		const timeoutControllers: AbortController[] = [];
+		vi.spyOn(AbortSignal, "timeout").mockImplementation(() => {
+			const controller = new AbortController();
+			timeoutControllers.push(controller);
+			return controller.signal;
+		});
+		const settings = Settings.isolated({
+			modelRoles: { judge: "laya/typed-decisions" },
+			"retry.fallbackChains": { judge: [] },
+		});
+		const registry = { getAvailable: () => [LAYA] } as unknown as ModelRegistry;
+		const judge = new ChainJudge({ settings, registry });
+		vi.spyOn(layaJudgeClient, "waitUntilReady").mockImplementation(() => {
+			stage.resolve("load");
+			return load.promise;
+		});
+		vi.spyOn(layaJudgeClient, "judge").mockImplementation(async (_request, options) => {
+			stage.resolve("judge");
+			await load.promise;
+			if (options?.signal?.aborted) throw options.signal.reason;
+			return {
+				answers: {
+					decision: {
+						type: "choice",
+						choice: "allow",
+						probabilities: { allow: 1, deny: 0 },
+						confidence: 1,
+					},
+				},
+				usage: { input_tokens: 1 },
+			};
+		});
+		const fixture = makeFixture("allow", 1, 1, {
+			settings,
+			registry,
+			judge,
+		});
+
+		const result = fixture.reviewer.review(request("exec"));
+		await stage.promise;
+		for (const controller of timeoutControllers) {
+			controller.abort(new DOMException("review deadline expired", "TimeoutError"));
+		}
+		load.resolve();
+
+		await expect(result).resolves.toMatchObject({ decision: "allow", model: "typed-decisions" });
 	});
 });
