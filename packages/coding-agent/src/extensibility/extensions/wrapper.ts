@@ -12,6 +12,7 @@ import {
 import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import { sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
+import { summarizeToolArguments } from "../../session/exit-diagnostics";
 import {
 	denyError,
 	formatApprovalPrompt,
@@ -200,6 +201,20 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		const preResolved = resolveApproval(this.tool, approvalArgs(params, context), approvalMode, userPolicies);
 		if (preResolved.policy === "deny") {
 			throw denyError(preResolved, this.tool.name);
+		}
+
+		// The loop fires the fast gate at arg-prep time for lead time. Dispatches
+		// the loop never saw (nested device dispatches, direct exec) have no such
+		// marker, so fire here as a fallback — `fireFastGate` is idempotent per
+		// tool call id. The tier is the one the approval gate just resolved, so
+		// the gate never classifies a call that cannot reach it.
+		if (!loopEmittedToolCall) {
+			this.runner.fireFastGate({
+				toolCallId,
+				toolName: this.tool.name,
+				tier: preResolved.tier,
+				args: summarizeToolArguments(params),
+			});
 		}
 
 		// 1. Emit tool_call event first - extensions can block execution or revise the input the tool

@@ -4168,6 +4168,31 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Two-tier automode approval. The fast pre-screen is deliberately not given
+	// tunable thresholds here — they live in `FastGateOptions` until calibrated.
+	"tools.automode.twoTier": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Approvals",
+			label: "Automode Fast Pre-Screen",
+			description:
+				"In automode, screen exec calls with a fast local classifier first: low-risk, well-authorized calls run without waking the blocking judge, and anything suspicious is escalated to it. The pre-screen can only allow or escalate — it never denies — and an unavailable or failed screen always escalates to the judge.",
+		},
+	},
+	"tools.automode.showScoresInNotice": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "interaction",
+			group: "Approvals",
+			label: "Show Scores in Approval Notice",
+			description:
+				"Show the dual-axis scores (risk x user_authorization) in the transcript-only approval notice. Deliberate deviation from the codex rules, which keep scores out of every visible projection: oho's tool-approval-notice row is transcript-only and never enters model context.",
+		},
+	},
+
 	// Todo tool
 	"todo.enabled": {
 		type: "boolean",

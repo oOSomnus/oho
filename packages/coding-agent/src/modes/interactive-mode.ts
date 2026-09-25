@@ -1898,7 +1898,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 		this.#eventBusUnsubscribers.push(
 			this.session.settings.onEffectiveChange(path => {
-				if (path === "tools.approvalMode") this.#prewarmLayaJudge();
+				if (path === "tools.approvalMode" || path === "tools.automode.twoTier") this.#prewarmLayaJudge();
 			}),
 		);
 		this.#prewarmLayaJudge();
@@ -3693,15 +3693,25 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.session.settings,
 			roleCandidatePool("judge", this.session.settings, this.session.modelRegistry),
 		);
-		if (judgeRole?.model.api !== "laya-local") {
+		const judgeIsLaya = judgeRole?.model.api === "laya-local";
+		// Two-tier automode classifies through Laya even when the blocking judge
+		// runs elsewhere, so the fast pre-screen keeps the worker warm on its own.
+		const twoTierEnabled = this.session.settings.get("tools.automode.twoTier") !== false;
+		if (!judgeIsLaya && !twoTierEnabled) {
 			this.#clearLayaJudgeStatus();
 			return;
 		}
-		if (!this.#layaJudgeLoadStateUnsubscribe) {
-			this.#layaJudgeLoadStateUnsubscribe = layaJudgeClient.subscribeLoadState(state => {
-				this.statusLine.setJudgeStatus(state === "idle" ? undefined : state);
-				this.ui.requestRender();
-			});
+		if (judgeIsLaya) {
+			if (!this.#layaJudgeLoadStateUnsubscribe) {
+				this.#layaJudgeLoadStateUnsubscribe = layaJudgeClient.subscribeLoadState(state => {
+					this.statusLine.setJudgeStatus(state === "idle" ? undefined : state);
+					this.ui.requestRender();
+				});
+			}
+		} else {
+			// The status line reports the judge role only; a laya-less judge with
+			// the pre-screen on still prewarms, just silently.
+			this.#clearLayaJudgeStatus();
 		}
 		layaJudgeClient.prewarm();
 	}

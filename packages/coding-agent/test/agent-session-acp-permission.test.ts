@@ -253,6 +253,7 @@ function noUiRunner(): ExtensionRunner {
 	return {
 		hasHandlers: () => false,
 		consumeToolCallEmitted: () => false,
+		fireFastGate: () => {},
 		hasUI: () => false,
 		sessionId: "acp-permission-test",
 		runScoped<T>(fn: () => T): T {

@@ -25,14 +25,21 @@ import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot } from "../../session/agent-session";
+import { collectRecentToolCalls } from "../../session/exit-diagnostics";
 import type { SessionManager } from "../../session/session-manager";
+import { resolveToolTier, type ToolTier } from "../../tools/approval";
 import {
 	ToolApprovalAutomodeReviewer,
 	type ToolApprovalReview,
 	type ToolApprovalReviewChoice,
+	type ToolApprovalReviewMeta,
 	type ToolApprovalReviewRequest,
 	type ToolApprovalReviewer,
 } from "../../tools/approval-automode";
+import { FastGate } from "../../tools/automode/fast-gate";
+import { TwoTierToolApprovalReviewer } from "../../tools/automode/two-tier-reviewer";
+import { TRAJECTORY_CALLS_LIMIT } from "../../tools/automode/trajectory";
+import type { FastGateVerdict } from "../../tools/automode/types";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { accumulateToolCallResult, buildAggregatedToolCallResult } from "../shared-events";
@@ -446,7 +453,11 @@ const noOpUIContext: ExtensionUIContext = {
 
 interface ToolApprovalRunnerOptions {
 	toolApprovalReviewer?: ToolApprovalReviewer;
-	onToolApprovalResolved?: (request: ToolApprovalReviewRequest, decision: ToolApprovalReviewChoice) => void;
+	onToolApprovalResolved?: (
+		request: ToolApprovalReviewRequest,
+		decision: ToolApprovalReviewChoice,
+		meta?: ToolApprovalReviewMeta,
+	) => void;
 	obfuscateForApprovalReview?: (text: string) => string;
 }
 const APPROVAL_CONTEXT_MESSAGE_LIMIT = 8;
@@ -493,6 +504,7 @@ export class ExtensionRunner {
 	#getModel: () => Model | undefined = () => undefined;
 	#isIdleFn: () => boolean = () => true;
 	#toolApprovalReviewer?: ToolApprovalReviewer;
+	#fastGate?: FastGate;
 	#obfuscateForApprovalReview?: (text: string) => string;
 	#onToolApprovalResolved?: ToolApprovalRunnerOptions["onToolApprovalResolved"];
 	#waitForIdleFn: () => Promise<void> = async () => {};
@@ -716,7 +728,7 @@ export class ExtensionRunner {
 	async reviewToolApproval(request: ToolApprovalReviewRequest, signal?: AbortSignal): Promise<ToolApprovalReview> {
 		if (!this.#toolApprovalReviewer) {
 			if (!this.settings) return { decision: "unavailable", reason: "session settings unavailable" };
-			this.#toolApprovalReviewer = new ToolApprovalAutomodeReviewer({
+			const blockingJudge = new ToolApprovalAutomodeReviewer({
 				settings: this.settings,
 				registry: this.modelRegistry,
 				sessionManager: this.sessionManager,
@@ -727,11 +739,39 @@ export class ExtensionRunner {
 				getConversationContext: () => approvalConversationContext(this.sessionManager),
 				obfuscateText: this.#obfuscateForApprovalReview,
 			});
+			// Tier-1 in front of Tier-2: the local classifier may clear a call on
+			// its own, and every doubt lands on the blocking judge below. A gate
+			// that is off or not yet built reports `disabled` and escalates the
+			// same way — it can never turn into an implicit allow.
+			this.#toolApprovalReviewer = new TwoTierToolApprovalReviewer({
+				inner: blockingJudge,
+				fastGate: {
+					evaluate: toolCallId => this.evaluateFastGate(toolCallId) ?? { kind: "escalate", handoff: "disabled" },
+				},
+				isEnabled: () => this.settings?.get("tools.automode.twoTier") !== false,
+				onHandoff: (handoff, handoffRequest) => {
+					logger.debug("Fast gate escalated to the blocking judge", {
+						toolName: handoffRequest.toolName,
+						handoff,
+					});
+				},
+			});
 		}
 		const review = await this.#toolApprovalReviewer.review(request, signal);
 		if (review.decision === "allow" || review.decision === "deny") {
 			try {
-				this.#onToolApprovalResolved?.(request, review.decision);
+				// Only forward meta that carries something, so listeners that predate
+				// the audit fields still observe the original two-argument call.
+				const meta: ToolApprovalReviewMeta = {
+					actor: review.actor,
+					handoff: review.handoff,
+					classification: review.classification,
+				};
+				if (meta.actor ?? meta.handoff ?? meta.classification) {
+					this.#onToolApprovalResolved?.(request, review.decision, meta);
+				} else {
+					this.#onToolApprovalResolved?.(request, review.decision);
+				}
 			} catch (error) {
 				logger.warn("Automode tool approval decision notification failed", {
 					toolName: request.toolName,
@@ -740,6 +780,81 @@ export class ExtensionRunner {
 			}
 		}
 		return review;
+	}
+
+	/**
+	 * Tier-1 classifier for two-tier automode approval, built lazily on first
+	 * use. Outside automode — or with `tools.automode.twoTier` off, whose scores
+	 * would have no consumer — there is no gate and the fast paths below are
+	 * no-ops. The cached instance survives a mode round-trip so the score ledger
+	 * keeps its history.
+	 */
+	#getFastGate(): FastGate | undefined {
+		if (!this.settings) return undefined;
+		if (this.settings.get("tools.approvalMode") !== "automode") return undefined;
+		if (this.settings.get("tools.automode.twoTier") === false) return undefined;
+		this.#fastGate ??= new FastGate({
+			settings: this.settings,
+			registry: this.modelRegistry,
+			getModel: () => this.#getModel(),
+			getCwd: () => this.cwd,
+			getConversationContext: () => approvalConversationContext(this.sessionManager),
+			getRecentCalls: () => collectRecentToolCalls(this.sessionManager.getBranch(), TRAJECTORY_CALLS_LIMIT),
+			obfuscateText: this.#obfuscateForApprovalReview,
+		});
+		return this.#fastGate;
+	}
+
+	/**
+	 * Kick off the Tier-1 classification for one tool call. Non-blocking and
+	 * idempotent per `toolCallId`, so both the loop's arg-prep-time fire and the
+	 * wrapper's fallback fire are safe. Only exec-tier calls are classified —
+	 * read/write never pass through the approval gate — and the gate itself can
+	 * only pass or escalate, never deny.
+	 */
+	fireFastGate(input: {
+		toolCallId: string;
+		toolName: string;
+		tier?: ToolTier;
+		args?: { command?: string; path?: string };
+		intent?: string;
+	}): void {
+		const gate = this.#getFastGate();
+		if (!gate) return;
+		const tier = this.#resolveFastGateTier(input);
+		if (tier !== "exec") return;
+		gate.fire({
+			toolCallId: input.toolCallId,
+			toolName: input.toolName,
+			tier,
+			args: input.args,
+			intent: input.intent,
+		});
+	}
+
+	/**
+	 * The cached Tier-1 verdict for a tool call, or `undefined` while the gate is
+	 * disabled or not yet constructed. A `pass` is the only verdict that may skip
+	 * the blocking judge; anything else escalates to it.
+	 */
+	evaluateFastGate(toolCallId: string): FastGateVerdict | undefined {
+		return this.#getFastGate()?.evaluate(toolCallId);
+	}
+
+	/**
+	 * Tier for a fire that did not carry one: the tool's own approval
+	 * declaration when the registry knows the tool, `"exec"` — the gating tier —
+	 * when it does not. An unrecognized explicit tier is normalized the same way.
+	 */
+	#resolveFastGateTier(input: {
+		toolName: string;
+		tier?: ToolTier;
+		args?: { command?: string; path?: string };
+	}): ToolTier {
+		if (input.tier === "read" || input.tier === "write" || input.tier === "exec") return input.tier;
+		const subject =
+			this.getRegisteredTool(input.toolName)?.definition ?? this.#nativeToolResolver?.(input.toolName)?.tool;
+		return subject ? resolveToolTier(subject, input.args) : "exec";
 	}
 
 	initialize(

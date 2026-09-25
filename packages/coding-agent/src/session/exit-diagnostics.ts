@@ -282,6 +282,21 @@ export function collectPendingToolCalls(entries: readonly SessionEntry[]): Pendi
 	return [...pending.values()].map(({ key: _key, ...toolCall }) => toolCall);
 }
 
+/**
+ * Most recent `limit` tool calls in chronological order, for the fast-gate
+ * trajectory state. Walks the branch from the leaf so long sessions do not pay
+ * for history they will not use.
+ */
+export function collectRecentToolCalls(entries: readonly SessionEntry[], limit: number): ToolExecutionStartData[] {
+	if (limit <= 0) return [];
+	const recent: ToolExecutionStartData[] = [];
+	for (let index = entries.length - 1; index >= 0 && recent.length < limit; index -= 1) {
+		const marker = readToolExecutionStart(entries[index]);
+		if (marker) recent.push(marker);
+	}
+	return recent.reverse();
+}
+
 function appendArgumentSummary(parts: string[], args: unknown): void {
 	if (!isObject(args)) return;
 	const command = args.command;

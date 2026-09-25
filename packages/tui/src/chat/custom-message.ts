@@ -16,14 +16,16 @@ export class CustomMessageComponent extends FramedMessageComponent<CustomMessage
 	constructor(message: CustomMessage<unknown>, customRenderer?: MessageRenderer) {
 		const isLiveDelegation = message.customType === LIVE_DELEGATION_MESSAGE_TYPE;
 		const details = message.details;
+		const isApprovalNotice =
+			message.customType === "tool-approval-notice" && typeof details === "object" && details !== null;
 		const decision =
-			message.customType === "tool-approval-notice" &&
-			typeof details === "object" &&
-			details !== null &&
-			"decision" in details &&
-			(details.decision === "allow" || details.decision === "deny")
+			isApprovalNotice && "decision" in details && (details.decision === "allow" || details.decision === "deny")
 				? details.decision
 				: undefined;
+		// Who resolved it — kept as a header suffix so a reader can tell a model
+		// approval from a human one without opening the raw entry.
+		const actor =
+			isApprovalNotice && "actor" in details && typeof details.actor === "string" ? details.actor : undefined;
 		const renderer: MessageRenderer | undefined =
 			customRenderer || decision !== undefined
 				? (
@@ -48,11 +50,12 @@ export class CustomMessageComponent extends FramedMessageComponent<CustomMessage
 										.map(item => item.text)
 										.join("\n");
 						const body = sanitizeText(replaceTabs(shortenPath(content)));
+						const header = decision === "allow" ? "Approved" : "Denied";
 						return new MessageNoticeComponent({
 							severity: decision === "allow" ? "success" : "error",
 							presentation: () => ({
 								icon: decision === "allow" ? currentTheme.status.success : currentTheme.status.error,
-								header: decision === "allow" ? "Approved" : "Denied",
+								header: actor ? `${header} · ${actor}` : header,
 								body: new Text(body, 0, 0),
 							}),
 						});

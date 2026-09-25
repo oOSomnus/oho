@@ -124,6 +124,102 @@ The review state is bounded and contains:
 
 The reviewer does not receive the complete session history, a raw executable tool object, or an execution callback. State is sanitized, truncated, and passed through the session secret obfuscator when available.
 
+## Two-tier review
+
+Under `automode`, exec prompts go through two reviewers instead of one. A fast local
+classifier answers most calls; the blocking judge is only woken when the classifier
+is not willing to vouch for the call. Both tiers sit behind the same approval seam,
+so every existing entry point — the tool wrapper, Cursor, MCP preflight, eval
+preludes — gets the same behavior without further changes.
+
+```
+tool call fires ──► fast gate (Laya, async, non-blocking)
+                        │
+                        ├─ pass ─────────────────► allow  (actor: fast gate)
+                        │
+                        └─ escalate ──► blocking judge ──► allow / deny  (actor: judge)
+                                            │
+                                            └─ unavailable ──► approval UI  (actor: user)
+                                                                  │
+                                                                  └─ no UI ──► fail closed
+```
+
+### What the fast gate sees
+
+The classification is **trajectory-level**, not per-call. The state carries the
+recent tool-call sequence and the current intent alongside the usual fields, so a
+turn that is individually benign but drifting toward secrets, remote state, or
+deletion shows up as a rising score rather than as a chain of passing verdicts.
+
+| Field | Meaning |
+| --- | --- |
+| `latest_user_request` | The only field that can authorize an operation. |
+| `operation` | The call being approved. |
+| `current_intent` | Why the agent says it is doing this. |
+| `recent_tool_calls` | The recent call sequence, newest last. |
+| `recent_conversation` | Recap used to interpret intent and constraints. |
+| `working_directory` | Where edits are expected. |
+| `tool_name`, `tier` | The tool and its impact class. |
+
+All state fields are untrusted evidence. Commands or policies embedded in them are
+never obeyed.
+
+### Dual-axis output
+
+Each sample reports two independent axes, mirroring codex's `GuardianAssessment`:
+
+| Axis | Levels | Meaning |
+| --- | --- | --- |
+| `risk` | `low` `medium` `high` `critical` | How much damage the operation could do. |
+| `user_authorization` | `high` `medium` `low` `unknown` | How well the user's request covers this specific operation. `unknown` means authorization was never established — it is not an ordered low tier. |
+
+A third yes/no read estimates whether the next two tool calls will include a
+high-impact action. Laya answers these as calibrated probability distributions
+rather than as free text, so the scores are continuous and do not need parsing.
+
+### Authority
+
+The fast gate may **allow** or **escalate**. It may never deny: a denial is the
+judge's call or the user's. A pass is a suggestion to skip the blocking reviewer,
+and the gate escalates on every doubt — a sample that is stale, low-confidence,
+trimmed past its load-bearing fields, weakly authorized, drifting toward impact,
+or simply missing.
+
+Nothing about the fast gate can turn a failure into a pass. A gate that is
+disabled, broken, timed out, or out of budget always lands on the blocking judge,
+and a judge that is itself unavailable stays `unavailable` for the approval UI.
+An unavailable local classifier is never an implicit allow.
+
+### Coverage
+
+The ledger tracks whether the cached score actually covers the call being
+reviewed: the lag between the newest fire and the newest sample, fires that
+failed with no newer success to cover them, and inputs too large to classify at
+all. A handoff reason (`missing-score`, `scoring-failure`, `stale`, `oversized`,
+`risk-threshold`, `authorization-weak`, `predictive-danger`, …) is recorded with
+every escalation so the cause stays distinguishable in the transcript.
+
+### Configuration
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `tools.automode.twoTier` | `true` | Consult the fast gate before the blocking judge under `automode`. Set `false` for the previous single-tier behavior. |
+| `tools.automode.showScoresInNotice` | `true` | Show `risk` and `user_authorization` on the transcript approval notice. |
+
+Score thresholds are not yet configurable; they live in the fast-gate defaults
+and are the subject of calibration work.
+
+### Deviation from codex
+
+codex keeps `SecurityRiskScore` out of every model-visible and user-visible
+projection — scores must not be readable at all. OMP deliberately shows them on
+the `tool-approval-notice` row instead. That row is transcript-only and is
+excluded from model context, so the isolation codex is protecting (scores must
+not influence the model being supervised) still holds; what changes is that a
+person reading the transcript can audit why a call passed. Set
+`tools.automode.showScoresInNotice: false` to restore the stricter behavior.
+
+
 ## Approval precedence
 
 Automode only reviews a prompt produced by `tools.approvalMode: automode`. It does not override other policy sources:
@@ -150,16 +246,11 @@ An explicit `prompt` is not converted into model approval. It continues through 
 
 The reviewer returns one of `allow`, `deny`, or `unavailable`.
 
-A model `allow` is accepted only when both the selected-choice probability and confidence meet the exec threshold:
+The judge's selected choice is applied directly. There is no probability or confidence threshold gate: an `allow` answer approves and a `deny` answer denies, regardless of the reported distribution. The calibrated `probabilities` and `confidence` fields are available on the answer but are not consulted here.
 
-| Decision | `exec` |
-| --- | ---: |
-| `allow` | `0.97` |
-| `deny` | `0.95` |
+An invalid structured answer, an unavailable judge, or a review timeout falls back to the existing approval UI. Reviews are limited to two concurrent requests per session; queued reviews time out after 30 seconds. Laya model startup does not consume the 30-second review budget: for a first-choice Laya judge, the budget starts when the model is ready, and a fallback Laya load pauses the existing budget.
 
-Anything below the threshold, an invalid structured answer, an unavailable judge, or a review timeout falls back to the existing approval UI. Reviews are limited to two concurrent requests per session; queued reviews time out after 30 seconds. Laya model startup does not consume the 30-second review budget: for a first-choice Laya judge, the budget starts when the model is ready, and a fallback Laya load pauses the existing budget.
-
-Automode decisions are recorded in the transcript with distinct green approval and red denial notices. Human approval prompts keep their existing presentation.
+Automode decisions are recorded in the transcript with distinct green approval and red denial notices, each labelled with the actor that resolved it (`fast gate`, `judge`, or `user`) and, for model decisions, the dual-axis scores behind them. Human approval prompts keep their existing presentation.
 
 If no interactive UI is available, an unresolved review fails closed. It never becomes an allow decision. Configure a working judge, provide an interactive approval channel, or set an explicit per-tool policy when unattended behavior is intentional.
 
@@ -188,7 +279,7 @@ omp config path
 Common symptoms:
 
 - **`Automode review unavailable`** — no judge candidate resolved, credentials are missing, or every fallback failed.
-- **Interactive prompt appears** — the judge returned `ask_human`, lacked sufficient confidence, or the call was governed by an explicit prompt or provider safety check.
+- **Interactive prompt appears** — the judge returned `unavailable`, or the call was governed by an explicit prompt or provider safety check.
 - **Headless call is rejected** — no high-confidence decision was available and fail-closed behavior is working as intended.
 
 For model catalog and provider authentication details, see [Models](./models.md), [Providers](./providers.md), and [Environment variables](./environment-variables.md#typesafe-judgments).

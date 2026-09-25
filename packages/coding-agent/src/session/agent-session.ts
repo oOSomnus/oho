@@ -221,7 +221,12 @@ import { isLowSignalTitleInput } from "../tiny/text";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
 import type { ImageAttachmentEntry, ToolSession } from "../tools";
 import { resolveApproval } from "../tools/approval";
-import type { ToolApprovalReviewChoice, ToolApprovalReviewRequest } from "../tools/approval-automode";
+import type {
+	ToolApprovalReviewChoice,
+	ToolApprovalReviewMeta,
+	ToolApprovalReviewRequest,
+} from "../tools/approval-automode";
+import { formatApprovalActorSuffix } from "../tools/approval-automode";
 import { type AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
 import { type AskToolInput, recoverAskQuestions } from "../tools/ask";
 import {
@@ -2580,7 +2585,11 @@ export class AgentSession {
 	}
 
 	/** Persist a judge decision and broadcast it as a visible, transcript-only chat row. */
-	recordToolApprovalDecision(request: ToolApprovalReviewRequest, decision: ToolApprovalReviewChoice): void {
+	recordToolApprovalDecision(
+		request: ToolApprovalReviewRequest,
+		decision: ToolApprovalReviewChoice,
+		meta?: ToolApprovalReviewMeta,
+	): void {
 		const obfuscator = this.#obfuscator;
 		const safeOperation = obfuscator?.hasSecrets() ? obfuscator.obfuscate(request.operation) : request.operation;
 		const toolName = truncateToWidth(replaceTabs(sanitizeText(request.toolName)), TRUNCATE_LENGTHS.CONTENT);
@@ -2594,12 +2603,24 @@ export class AgentSession {
 		);
 		const timestamp = Date.now();
 		const verb = decision === "allow" ? "approved" : "denied";
+		// Scores are shown on the notice by default. Turning this off hides them
+		// from the rendered row and from the notice payload alike, which is what
+		// codex does unconditionally — see "Deviation from codex" in the docs.
+		const showScores = this.settings.get("tools.automode.showScoresInNotice") !== false;
 		const message: CustomMessage = {
 			role: "custom",
 			customType: TOOL_APPROVAL_NOTICE_MESSAGE_TYPE,
-			content: `Automode ${verb} tool call: ${toolName}\n${operation}`,
+			content: `Automode ${verb} tool call${formatApprovalActorSuffix(meta, { showScores })}: ${toolName}\n${operation}`,
 			display: true,
-			details: { toolCallId: request.toolCallId, tier: request.tier, decision },
+			details: {
+				toolCallId: request.toolCallId,
+				tier: request.tier,
+				decision,
+				actor: meta?.actor,
+				handoff: meta?.handoff,
+				risk: showScores ? meta?.classification?.risk : undefined,
+				authorization: showScores ? meta?.classification?.authorization : undefined,
+			},
 			attribution: "agent",
 			timestamp,
 		};
@@ -2630,6 +2651,15 @@ export class AgentSession {
 		if (args) data.args = args;
 		if (event.intent) data.intent = event.intent;
 		this.sessionManager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, data);
+		// Two-tier automode: start the Tier-1 trajectory classification here, at
+		// arg-prep time, so it lands before the approval gate asks. Non-blocking
+		// and idempotent per tool call id; a no-op outside automode.
+		this.#extensionRunner?.fireFastGate({
+			toolCallId: data.toolCallId,
+			toolName: data.toolName,
+			args: data.args,
+			intent: data.intent,
+		});
 	}
 
 	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {

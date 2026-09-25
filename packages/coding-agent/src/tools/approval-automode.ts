@@ -1,6 +1,6 @@
 import type { ToolTier } from "@oh-my-pi/pi-agent-core";
 import type { ChoiceQuestion, Judge, Model } from "@oh-my-pi/pi-ai";
-import { replaceTabs, shortenPath, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { replaceTabs, shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import {
 	ChainJudge,
@@ -16,6 +16,8 @@ import toolApprovalAutomodePrompt from "../prompts/system/tool-approval-automode
 import { Semaphore } from "../task/parallel";
 import { truncateForPrompt } from "./approval";
 import { layaJudgeClient } from "../judgment/laya-client";
+import type { ApprovalActor, ApprovalReviewMeta } from "./automode/types";
+import { boundedText } from "./automode/text";
 
 export type ToolApprovalReviewChoice = "allow" | "deny";
 
@@ -26,11 +28,13 @@ export interface ToolApprovalReviewRequest {
 	operation: string;
 }
 
-export interface ToolApprovalReview {
+export interface ToolApprovalReview extends ApprovalReviewMeta {
 	decision: ToolApprovalReviewChoice | "unavailable";
 	model?: string;
 	reason?: string;
 }
+
+export type { ApprovalReviewMeta as ToolApprovalReviewMeta };
 
 export interface ToolApprovalReviewer {
 	review(request: ToolApprovalReviewRequest, signal?: AbortSignal): Promise<ToolApprovalReview>;
@@ -70,14 +74,6 @@ const AUTOMODE_QUESTION: ChoiceQuestion<ToolApprovalReviewChoice> = {
 };
 
 const AUTOMODE_QUESTIONS = { decision: AUTOMODE_QUESTION };
-
-function boundedText(value: string | undefined, maxChars: number, obfuscate?: (text: string) => string): string {
-	if (!value) return "(none)";
-	const redacted = obfuscate ? obfuscate(value) : value;
-	const sanitized = sanitizeText(replaceTabs(redacted)).replace(/\r/g, "").trim();
-	if (!sanitized) return "(none)";
-	return truncateToWidth(truncateForPrompt(sanitized, maxChars), maxChars);
-}
 
 function boundedReason(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
@@ -212,6 +208,7 @@ export class ToolApprovalAutomodeReviewer implements ToolApprovalReviewer {
 			return {
 				decision: answer.choice,
 				model: result.model,
+				actor: "judge",
 			};
 		} catch (error) {
 			if (signal?.aborted) throw abortError(signal);
@@ -227,4 +224,33 @@ export function formatToolApprovalReviewUnavailable(review: ToolApprovalReview):
 	if (review.decision !== "unavailable") return undefined;
 	const reason = review.reason ? boundedReason(review.reason) : undefined;
 	return `Automode review unavailable${reason ? `: ${reason}` : "."}`;
+}
+
+const ACTOR_LABELS: Record<ApprovalActor, string> = {
+	"fast-gate": "fast gate",
+	judge: "judge",
+	user: "user",
+	policy: "policy",
+};
+
+/**
+ * Suffix naming who resolved the approval, so the transcript row can be audited
+ * for "the model approved this" versus "a person approved this".
+ *
+ * The dual-axis scores ride along unless the caller turns them off; the notice
+ * is transcript-only, so they never reach the model being supervised. See the
+ * "Deviation from codex" note in `docs/approval-automode.md`.
+ */
+export function formatApprovalActorSuffix(
+	meta: ApprovalReviewMeta | undefined,
+	options: { showScores?: boolean } = {},
+): string {
+	const actor = meta?.actor;
+	if (!actor) return "";
+	const label = ACTOR_LABELS[actor];
+	const scores =
+		meta.classification && options.showScores !== false
+			? `: risk=${meta.classification.risk} auth=${meta.classification.authorization}`
+			: "";
+	return ` (${label}${scores})`;
 }

@@ -129,8 +129,23 @@ describe("InteractiveMode Laya judge prewarm", () => {
 		expect(renderedStatus()).not.toContain("Judge");
 	});
 
-	it("does not prewarm or render a non-Laya primary judge in automode", async () => {
+	it("prewarms for the fast pre-screen without rendering status for a non-Laya judge", async () => {
 		session.settings.set("tools.approvalMode", "automode");
+		session.settings.setModelRole("judge", "anthropic/claude-sonnet-4-5");
+		const { prewarm, subscribe } = installLayaSpies();
+
+		await mode.init();
+
+		// The blocking judge runs elsewhere, but the two-tier fast pre-screen
+		// classifies through Laya; only the judge status line stays dark.
+		expect(prewarm).toHaveBeenCalledTimes(1);
+		expect(subscribe).not.toHaveBeenCalled();
+		expect(renderedStatus()).not.toContain("Judge");
+	});
+
+	it("does not prewarm a non-Laya judge when the fast pre-screen is off", async () => {
+		session.settings.set("tools.approvalMode", "automode");
+		session.settings.set("tools.automode.twoTier", false);
 		session.settings.setModelRole("judge", "anthropic/claude-sonnet-4-5");
 		const { prewarm, subscribe } = installLayaSpies();
 
@@ -162,10 +177,25 @@ describe("InteractiveMode Laya judge prewarm", () => {
 
 		session.settings.setModelRole("judge", "anthropic/claude-sonnet-4-5");
 		expect(renderedStatus()).not.toContain("Judge");
-		expect(prewarm).toHaveBeenCalledTimes(2);
+		expect(prewarm).toHaveBeenCalledTimes(3);
 
 		session.settings.setModelRole("judge", "laya/typed-decisions");
-		expect(prewarm).toHaveBeenCalledTimes(3);
+		expect(prewarm).toHaveBeenCalledTimes(4);
+	});
+
+	it("rechecks the fast pre-screen toggle while the mode is active", async () => {
+		session.settings.set("tools.approvalMode", "automode");
+		session.settings.setModelRole("judge", "anthropic/claude-sonnet-4-5");
+		const { prewarm } = installLayaSpies();
+
+		await mode.init();
+		expect(prewarm).toHaveBeenCalledTimes(1);
+
+		session.settings.set("tools.automode.twoTier", false);
+		expect(prewarm).toHaveBeenCalledTimes(1);
+
+		session.settings.set("tools.automode.twoTier", true);
+		expect(prewarm).toHaveBeenCalledTimes(2);
 	});
 
 	it("unsubscribes the Laya status listener when the mode stops", async () => {
