@@ -90,9 +90,10 @@ runtime, model cache, and detached worker.
 
 The worker is CPU-only and exits after 15 minutes without a request. Set
 `OMP_LAYA_WORKER_IDLE_MS` to change that lifetime for a test or managed
-environment. If installation, model loading, or a judgment fails, the normal
-judge fallback chain continues; an unavailable local judge never becomes an
-implicit allow.
+environment. Automode waits for Laya to finish loading on first use and after an
+idle worker restart. Laya startup is excluded from the review deadline; if
+loading or a judgment fails, the normal judge fallback chain continues. An
+unavailable local judge never becomes an implicit allow.
 
 The selected judge model must be available in the catalog. Inspect candidates with:
 
@@ -147,7 +148,7 @@ An explicit `prompt` is not converted into model approval. It continues through 
 
 ## Review outcomes
 
-The reviewer returns one of `allow`, `deny`, or `ask_human`.
+The reviewer returns one of `allow`, `deny`, or `unavailable`.
 
 A model `allow` is accepted only when both the selected-choice probability and confidence meet the exec threshold:
 
@@ -156,7 +157,9 @@ A model `allow` is accepted only when both the selected-choice probability and c
 | `allow` | `0.97` |
 | `deny` | `0.95` |
 
-Anything below the threshold, an invalid structured answer, `ask_human`, an unavailable judge, or a review timeout falls back to the existing approval UI. The review deadline is 10 seconds and concurrent reviews are limited to two per session.
+Anything below the threshold, an invalid structured answer, an unavailable judge, or a review timeout falls back to the existing approval UI. Reviews are limited to two concurrent requests per session; queued reviews time out after 30 seconds. Laya model startup does not consume the 30-second review budget: for a first-choice Laya judge, the budget starts when the model is ready, and a fallback Laya load pauses the existing budget.
+
+Automode decisions are recorded in the transcript with distinct green approval and red denial notices. Human approval prompts keep their existing presentation.
 
 If no interactive UI is available, an unresolved review fails closed. It never becomes an allow decision. Configure a working judge, provide an interactive approval channel, or set an explicit per-tool policy when unattended behavior is intentional.
 

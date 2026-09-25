@@ -21,10 +21,12 @@ class FakeHandle implements RefCountedWorkerHandle<LayaWorkerRequest, LayaWorker
 	readonly sent: LayaWorkerRequest[] = [];
 	#messages = new Set<(message: LayaWorkerResponse) => void>();
 	#errors = new Set<(error: Error) => void>();
+	#autoLoad = true;
 	#autoJudge = true;
 	#loadedDevice = "cpu";
 	#loadReply: ResponseFactory | undefined;
 	#judgeReply: ResponseFactory | undefined;
+	readonly loadSent = Promise.withResolvers<void>();
 	refCount = 0;
 	terminated = false;
 	terminateCount = 0;
@@ -32,6 +34,10 @@ class FakeHandle implements RefCountedWorkerHandle<LayaWorkerRequest, LayaWorker
 
 	autoJudge(value: boolean): void {
 		this.#autoJudge = value;
+	}
+
+	autoLoad(value: boolean): void {
+		this.#autoLoad = value;
 	}
 
 	loadedDevice(value: string): void {
@@ -49,6 +55,8 @@ class FakeHandle implements RefCountedWorkerHandle<LayaWorkerRequest, LayaWorker
 	send(message: LayaWorkerRequest): void {
 		this.sent.push(message);
 		if (message.type === "load") {
+			this.loadSent.resolve();
+			if (!this.#autoLoad) return;
 			const response =
 				this.#loadReply?.(message.id) ??
 				({ type: "loaded", id: message.id, device: this.#loadedDevice } satisfies LayaWorkerResponse);
@@ -99,6 +107,9 @@ class FakeHandle implements RefCountedWorkerHandle<LayaWorkerRequest, LayaWorker
 	emit(message: LayaWorkerResponse): void {
 		for (const handler of this.#messages) handler(message);
 	}
+	fail(error: Error): void {
+		for (const handler of this.#errors) handler(error);
+	}
 }
 
 function clientWith(handle: FakeHandle): LayaJudgeClient {
@@ -127,6 +138,60 @@ describe("LayaJudgeClient", () => {
 		await client.terminate();
 		expect(states).toEqual(["idle", "loading", "ready", "idle"]);
 		unsubscribe();
+	});
+	test("waits for model startup without sending a judgment", async () => {
+		const handle = new FakeHandle();
+		handle.autoLoad(false);
+		const client = clientWith(handle);
+		const states: LayaJudgeLoadState[] = [];
+		client.subscribeLoadState(state => states.push(state));
+
+		const ready = client.waitUntilReady();
+		await handle.loadSent.promise;
+		const load = handle.sent[0];
+		expect(load?.type).toBe("load");
+		if (load?.type !== "load") throw new Error("Expected one load request");
+		handle.emit({ type: "loaded", id: load.id, device: "cpu" });
+		await ready;
+
+		expect(handle.sent.map(message => message.type)).toEqual(["load"]);
+		expect(states).toEqual(["idle", "loading", "ready"]);
+		await client.terminate();
+	});
+
+	test("cancels a pending readiness wait", async () => {
+		const handle = new FakeHandle();
+		handle.autoLoad(false);
+		const client = clientWith(handle);
+		const controller = new AbortController();
+		const ready = client.waitUntilReady(controller.signal);
+		await handle.loadSent.promise;
+		controller.abort(new Error("caller stopped"));
+
+		await expect(ready).rejects.toThrow("caller stopped");
+		await client.terminate();
+	});
+	test("loads the model again after the worker exits while idle", async () => {
+		const first = new FakeHandle();
+		const restarted = new FakeHandle();
+		const handles = [first, restarted];
+		const client = clientWithConnect(async () => {
+			const handle = handles.shift();
+			if (!handle) throw new Error("unexpected extra connection");
+			return handle;
+		});
+		const states: LayaJudgeLoadState[] = [];
+		const unsubscribe = client.subscribeLoadState(state => states.push(state));
+
+		await client.waitUntilReady();
+		first.fail(new Error("worker closed while idle"));
+		await client.waitUntilReady();
+
+		expect(first.sent.map(message => message.type)).toEqual(["load"]);
+		expect(restarted.sent.map(message => message.type)).toEqual(["load"]);
+		expect(states).toEqual(["idle", "loading", "ready", "idle", "loading", "ready"]);
+		unsubscribe();
+		await client.terminate();
 	});
 
 	test("rejects a worker that reports a non-CPU device", async () => {
