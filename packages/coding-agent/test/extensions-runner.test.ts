@@ -2391,6 +2391,7 @@ describe("ExtensionRunner", () => {
 				settings,
 			);
 			let observedState: Record<string, string> | undefined;
+			const readiness = vi.spyOn(layaJudgeClient, "waitUntilReady").mockResolvedValue(undefined);
 			const laya = vi.spyOn(layaJudgeClient, "judge").mockImplementation(async request => {
 				observedState = request.state as Record<string, string>;
 				return {
@@ -2424,6 +2425,7 @@ describe("ExtensionRunner", () => {
 				expect(observedState?.recent_conversation).toContain("user: Update the source file we discussed.");
 			} finally {
 				laya.mockRestore();
+				readiness.mockRestore();
 			}
 		});
 
