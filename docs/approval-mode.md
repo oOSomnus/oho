@@ -19,12 +19,12 @@ Configure with `tools.approvalMode`:
 | ---------------- | ----------------------- | --------------- |
 | `always-ask`     | `read`                  | `write`, `exec` |
 | `write`          | `read`, `write`         | `exec`          |
-| `automode`       | `read`, `write`         | `exec` is reviewed by the configured judge; uncertain or unavailable reviews fall back to UI |
+| `automode`       | `read`, `write`         | `exec` is reviewed first by a local trajectory classifier that may allow or escalate to the configured judge; uncertain or unavailable reviews fall back to UI |
 | `yolo` (default) | `read`, `write`, `exec` | none            |
 
 `--auto-approve` and `--yolo` force `tools.approvalMode: yolo` for the session.
 
-See [Automode tool approval](./approval-automode.md) for judge configuration, confidence thresholds, fallback behavior, and non-interactive usage.
+See [Automode tool approval](./approval-automode.md) for the two-tier review pipeline, judge configuration, fallback behavior, and non-interactive usage.
 
 ## User overrides
 
